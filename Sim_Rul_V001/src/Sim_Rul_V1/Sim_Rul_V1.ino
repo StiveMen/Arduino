@@ -282,9 +282,6 @@ void pedalRanges(
 
 // ════════════════════════════════════════════════════════════════════
 // 4. ОБРАБОТКА НАЖАТИЯ КНОПКИ «ЗАЖИГАНИЕ»
-
-// ════════════════════════════════════════════════════════════════════
-// 4. ОБРАБОТКА НАЖАТИЯ КНОПКИ «ЗАЖИГАНИЕ»
 // ════════════════════════════════════════════════════════════════════
 bool ignPrev = false;
 bool ignArmed = false;
@@ -312,9 +309,6 @@ bool ignEdge() {
   ignPrev = nowPressed;
   return newPress;
 }
-
-// ════════════════════════════════════════════════════════════════════
-// 5. ПОИСК НУЛЕВОГО ПОЛОЖЕНИЯ РУЛЯ
 
 // ════════════════════════════════════════════════════════════════════
 // 5. ПОИСК НУЛЕВОГО ПОЛОЖЕНИЯ РУЛЯ
@@ -428,54 +422,121 @@ void blinkSaved(){
   // Подтверждение выводится в окне последовательного монитора.
   Serial.println(F("CALIBRATION_SAVED"));
 }
-void firstCalibration(){
-  ignition.update();centerSwitch.update();highGear.update();
-  if(fstage!=FStage::SAVE && millis()-fstarted>FIRST_CAL_TIMEOUT_MS){setStage(FStage::ERROR);return;}
+void firstCalibration() {
+  ignition.update();
+  centerSwitch.update();
+  highGear.update();
 
-  if(fstage==FStage::ZERO){
-    if(zeroCalibrate()){setStage(FStage::STEERING_EXTREME);}
-    else setStage(FStage::ERROR);
+  // Если этап затянулся, просим пользователя начать калибровку заново.
+  if (fstage != FStage::SAVE &&
+      millis() - fstarted > FIRST_CAL_TIMEOUT_MS) {
+    setStage(FStage::ERROR);
     return;
   }
-  if(fstage==FStage::STEERING_EXTREME){
-    long p=labs(readEncoder()-centerOffset);if(p>steeringPeak)steeringPeak=p;
-    if(ignEdge()){if(steeringPeak<10){setStage(FStage::ERROR);return;}cal.steeringExtreme=steeringPeak;setStage(FStage::PEDAL_MIN);}
+
+  // Этап 1: поиск нулевого положения руля.
+  if (fstage == FStage::ZERO) {
+    if (zeroCalibrate()) {
+      setStage(FStage::STEERING_EXTREME);
+    } else {
+      setStage(FStage::ERROR);
+    }
     return;
   }
-  if(fstage==FStage::PEDAL_MIN){
-    if(ignEdge()){cal.gasMin=analogStable(PIN_GAS);cal.brakeMin=analogStable(PIN_BRAKE);cal.clutchMin=analogStable(PIN_CLUTCH);setStage(FStage::PEDAL_MAX);}
+
+  // Этап 2: пользователь поворачивает руль до крайнего положения.
+  if (fstage == FStage::STEERING_EXTREME) {
+    long position = labs(readEncoder() - centerOffset);
+
+    if (position > steeringPeak) {
+      steeringPeak = position;
+    }
+
+    if (ignEdge()) {
+      if (steeringPeak < 10) {
+        setStage(FStage::ERROR);
+        return;
+      }
+
+      cal.steeringExtreme = steeringPeak;
+      setStage(FStage::PEDAL_MIN);
+    }
     return;
   }
-  if(fstage==FStage::PEDAL_MAX){
-    // Запоминаем крайнее значение каждой педали относительно положения покоя.
-    // Это работает и при обратном направлении потенциометра.
-    uint16_t g=analogStable(PIN_GAS),b=analogStable(PIN_BRAKE),c=analogStable(PIN_CLUTCH);
-    if(abs((int)g-(int)cal.gasMin)>abs((int)pedalPeakG-(int)cal.gasMin))pedalPeakG=g;
-    if(abs((int)b-(int)cal.brakeMin)>abs((int)pedalPeakB-(int)cal.brakeMin))pedalPeakB=b;
-    if(abs((int)c-(int)cal.clutchMin)>abs((int)pedalPeakC-(int)cal.clutchMin))pedalPeakC=c;
-    if(ignEdge()){
-      cal.gasMax=pedalPeakG; cal.brakeMax=pedalPeakB; cal.clutchMax=pedalPeakC;
-      if(cal.gasMax==cal.gasMin||cal.brakeMax==cal.brakeMin||cal.clutchMax==cal.clutchMin){setStage(FStage::ERROR);return;}
+
+  // Этап 3а: записываем исходное положение всех педалей.
+  if (fstage == FStage::PEDAL_MIN) {
+    if (ignEdge()) {
+      cal.gasMin = analogStable(PIN_GAS);
+      cal.brakeMin = analogStable(PIN_BRAKE);
+      cal.clutchMin = analogStable(PIN_CLUTCH);
+      setStage(FStage::PEDAL_MAX);
+    }
+    return;
+  }
+
+  // Этап 3б: отслеживаем полный ход каждой педали.
+  if (fstage == FStage::PEDAL_MAX) {
+    uint16_t gas = analogStable(PIN_GAS);
+    uint16_t brake = analogStable(PIN_BRAKE);
+    uint16_t clutch = analogStable(PIN_CLUTCH);
+
+    if (abs((int)gas - (int)cal.gasMin) >
+        abs((int)pedalPeakG - (int)cal.gasMin)) {
+      pedalPeakG = gas;
+    }
+
+    if (abs((int)brake - (int)cal.brakeMin) >
+        abs((int)pedalPeakB - (int)cal.brakeMin)) {
+      pedalPeakB = brake;
+    }
+
+    if (abs((int)clutch - (int)cal.clutchMin) >
+        abs((int)pedalPeakC - (int)cal.clutchMin)) {
+      pedalPeakC = clutch;
+    }
+
+    if (ignEdge()) {
+      cal.gasMax = pedalPeakG;
+      cal.brakeMax = pedalPeakB;
+      cal.clutchMax = pedalPeakC;
+
+      // Если педаль не изменила показание, калибровка считается ошибочной.
+      if (cal.gasMax == cal.gasMin ||
+          cal.brakeMax == cal.brakeMin ||
+          cal.clutchMax == cal.clutchMin) {
+        setStage(FStage::ERROR);
+        return;
+      }
+
       setStage(FStage::SAVE);
     }
     return;
   }
-  if(fstage==FStage::SAVE){
-    // Для сохранения переведи КПП в нейтраль и удерживай «Зажигание».
-    if(ignition.pressed()){
-      if(saveHoldStarted==0)saveHoldStarted=millis();
-      if(millis()-saveHoldStarted>=1200){
-      saveCal();
-      blinkSaved();
-      // Результат уже сохранён в EEPROM.
-      // Перезапусти контроллер, чтобы начать работу с новой калибровкой.
-      fstage=FStage::DONE;
-      justSavedCalibration=true;
+
+  // Этап 4: сохраняем результат. Перед этим КПП должна быть в нейтрали.
+  if (fstage == FStage::SAVE) {
+    if (ignition.pressed()) {
+      if (saveHoldStarted == 0) {
+        saveHoldStarted = millis();
+      }
+
+      if (millis() - saveHoldStarted >= 1200) {
+        saveCal();
+        blinkSaved();
+
+        // После сохранения необходим перезапуск контроллера.
+        fstage = FStage::DONE;
+        justSavedCalibration = true;
+      }
+    } else {
+      saveHoldStarted = 0;
     }
-    }else saveHoldStarted=0;
   }
 }
 
+// ════════════════════════════════════════════════════════════════════
+// 7. РАСПОЗНАВАНИЕ ПЕРЕДАЧ И ПОВЫШЕННАЯ ПЕРЕДАЧА
 // ════════════════════════════════════════════════════════════════════
 // 7. РАСПОЗНАВАНИЕ ПЕРЕДАЧ И ПОВЫШЕННАЯ ПЕРЕДАЧА
 // ════════════════════════════════════════════════════════════════════
@@ -588,9 +649,6 @@ void updateGear(int x, int y) {
 
 // ════════════════════════════════════════════════════════════════════
 // 9. ОТПРАВКА ДАННЫХ В ИГРУ И РЕЖИМ МОНИТОРА
-
-// ════════════════════════════════════════════════════════════════════
-// 9. ОТПРАВКА ДАННЫХ В ИГРУ И РЕЖИМ МОНИТОРА
 // ════════════════════════════════════════════════════════════════════
 void updateController(bool sendHid){
   ignition.update();highGear.update();
@@ -611,30 +669,68 @@ void updateController(bool sendHid){
   // gx и gy нужны только для распознавания передачи и не отправляются в USB HID.
   if(sendHid)Joystick.sendState();
 }
-void printMonitor(){
-  static uint32_t last=0;
-  if(millis()-last<MONITOR_INTERVAL_MS)return;
-  last=millis();
-  Serial.println(F("\n=== SIM_RUL MONITOR ==="));
-  Serial.print(F("STEERING: "));Serial.println(readEncoder()-centerOffset);
-  int gmn,gmx,bmn,bmx,cmn,cmx; pedalRanges(gmn,gmx,bmn,bmx,cmn,cmx);
-  Serial.print(F("GAS ADC/NORM: "));Serial.print(analogStable(PIN_GAS));Serial.print('/');
-  Serial.println(mapPedal(analogStable(PIN_GAS),gmn,gmx));
-  Serial.print(F("BRAKE ADC/NORM: "));Serial.print(analogStable(PIN_BRAKE));Serial.print('/');
-  Serial.println(mapPedal(analogStable(PIN_BRAKE),bmn,bmx));
-  Serial.print(F("CLUTCH ADC/NORM: "));Serial.print(analogStable(PIN_CLUTCH));Serial.print('/');
-  Serial.println(mapPedal(analogStable(PIN_CLUTCH),cmn,cmx));
-  Serial.print(F("GEAR X: "));Serial.println(analogStable(PIN_GEAR_X));
-  Serial.print(F("GEAR Y: "));Serial.println(analogStable(PIN_GEAR_Y));
-  Serial.print(F("IGNITION: "));Serial.println(ignition.pressed()?F("ON"):F("OFF"));
-  Serial.print(F("HIGH GEAR BUTTON: "));Serial.println(highGear.pressed()?F("PRESSED"):F("RELEASED"));
-  Serial.print(F("HIGH GEAR HID LATCH: "));Serial.println(highGearLatched?F("ON"):F("OFF"));
-  Serial.print(F("IGNITION HID BUTTON: "));Serial.println(ignition.pressed()?F("ON"):F("OFF"));
-  for(uint8_t i=0;i<6;++i){
-    Serial.print(F("GEAR "));Serial.print(i+1);Serial.print(F(": "));
-    Serial.println(activeGear==(int8_t)(i+1)?F("ON"):F("OFF"));
+void printMonitor() {
+  static uint32_t lastPrint = 0;
+
+  if (millis() - lastPrint < MONITOR_INTERVAL_MS) {
+    return;
   }
-  Serial.println(F("HID OUTPUT: DISABLED (MONITOR MODE)"));
+  lastPrint = millis();
+
+  Serial.println(F("\n=== SIM_RUL: МОНИТОР ==="));
+  Serial.print(F("РУЛЬ, импульсы от нуля: "));
+  Serial.println(readEncoder() - centerOffset);
+
+  int gasMin, gasMax;
+  int brakeMin, brakeMax;
+  int clutchMin, clutchMax;
+
+  pedalRanges(
+    gasMin, gasMax,
+    brakeMin, brakeMax,
+    clutchMin, clutchMax
+  );
+
+  Serial.print(F("ГАЗ, АЦП / норма: "));
+  Serial.print(analogStable(PIN_GAS));
+  Serial.print('/');
+  Serial.println(mapPedal(analogStable(PIN_GAS), gasMin, gasMax));
+
+  Serial.print(F("ТОРМОЗ, АЦП / норма: "));
+  Serial.print(analogStable(PIN_BRAKE));
+  Serial.print('/');
+  Serial.println(mapPedal(analogStable(PIN_BRAKE), brakeMin, brakeMax));
+
+  Serial.print(F("СЦЕПЛЕНИЕ, АЦП / норма: "));
+  Serial.print(analogStable(PIN_CLUTCH));
+  Serial.print('/');
+  Serial.println(mapPedal(analogStable(PIN_CLUTCH), clutchMin, clutchMax));
+
+  Serial.print(F("КПП, X: "));
+  Serial.println(analogStable(PIN_GEAR_X));
+  Serial.print(F("КПП, Y: "));
+  Serial.println(analogStable(PIN_GEAR_Y));
+
+  Serial.print(F("ЗАЖИГАНИЕ: "));
+  Serial.println(ignition.pressed() ? F("НАЖАТО") : F("ОТПУЩЕНО"));
+
+  Serial.print(F("КНОПКА ПОВЫШЕННОЙ ПЕРЕДАЧИ: "));
+  Serial.println(highGear.pressed() ? F("НАЖАТА") : F("ОТПУЩЕНА"));
+
+  Serial.print(F("ПОВЫШЕННАЯ ПЕРЕДАЧА (HID): "));
+  Serial.println(highGearLatched ? F("ВКЛ") : F("ВЫКЛ"));
+
+  Serial.print(F("ЗАЖИГАНИЕ (HID): "));
+  Serial.println(ignition.pressed() ? F("ВКЛ") : F("ВЫКЛ"));
+
+  for (uint8_t i = 0; i < 6; ++i) {
+    Serial.print(F("ПЕРЕДАЧА "));
+    Serial.print(i + 1);
+    Serial.print(F(": "));
+    Serial.println(activeGear == (int8_t)(i + 1) ? F("ВКЛ") : F("ВЫКЛ"));
+  }
+
+  Serial.println(F("ВЫВОД В ИГРУ: ОТКЛЮЧЁН (РЕЖИМ МОНИТОРА)"));
 }
 void monitor(){ printDiagnostics(); }
 
