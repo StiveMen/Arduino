@@ -11,7 +11,7 @@
  * • КПП распознаётся по двум аналоговым координатам X/Y.
  *   Координаты КПП не передаются в игру как оси — вместо них
  *   отправляются отдельные кнопки передач 1–6.
- * • Кнопка «Зажигание» и кнопка повышенной передачи тоже являются HID-кнопками.
+ * • Кнопки HID: передачи 1–6, сцепление (когда нажато) и зажигание.
  * • Контроллер запускается сразу с настройками по умолчанию, без обязательной калибровки.
  * • Если при включении удерживать «Зажигание», запускается калибровка.
  * • При обычном запуске текущее положение энкодера принимается за ноль.
@@ -164,9 +164,12 @@ Joystick_ Joystick(
 );
 
 // Номера кнопок в игровом контроллере.
-constexpr uint8_t HID_IGNITION = 0;
-constexpr uint8_t HID_HIGH_GEAR = 1;
-constexpr uint8_t HID_GEAR_BASE = 2;
+// Нумерация внутри прошивки с нуля: кнопки 1–6 — передачи,
+// кнопка 7 — нажатая педаль сцепления, кнопка 8 — зажигание.
+constexpr uint8_t HID_GEAR_BASE = 0;
+constexpr uint8_t HID_CLUTCH = 6;
+constexpr uint8_t HID_IGNITION = 7;
+constexpr int CLUTCH_BUTTON_THRESHOLD = 512;
 
 // Текущее значение энкодера. Переменные меняются также из прерывания.
 volatile long encoderRaw = 0;
@@ -726,16 +729,16 @@ void updateController(bool sendHid) {
     steering = 0;
   }
 
-  // Отправляем в HID состояния зажигания, повышенной передачи и передач 1–6.
-  Joystick.setButton(HID_IGNITION, ignition.pressed());
-  Joystick.setButton(HID_HIGH_GEAR, highGearLatched);
-
+  // Кнопки HID: передачи 1–6, сцепление, зажигание.
+  // Концевик руля не назначается виртуальной кнопкой.
   for (uint8_t i = 0; i < 6; ++i) {
     Joystick.setButton(
       HID_GEAR_BASE + i,
       activeGear == (int8_t)(i + 1)
     );
   }
+  Joystick.setButton(HID_CLUTCH, clutch >= CLUTCH_BUTTON_THRESHOLD);
+  Joystick.setButton(HID_IGNITION, ignition.pressed());
 
   // Важно: диапазоны этих осей заданы в setup().
   Joystick.setXAxis(steering);
@@ -859,7 +862,7 @@ void setup(){
   } else {
     calibrationMode = false;
     fstage = FStage::DONE;
-    Serial.println(F("[USB HID] Контроллер готов без калибровки. Для калибровки удерживай «Зажигание» при включении."));
+    Serial.println(F("[USB HID] Готов: кнопки 1–6 — передачи, 7 — сцепление, 8 — зажигание. Концевик не является HID-кнопкой."));
   }
 }
 void loop() {
