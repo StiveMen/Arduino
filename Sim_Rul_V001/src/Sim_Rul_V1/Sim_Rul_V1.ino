@@ -314,7 +314,7 @@ void printMonitor(){
   static uint32_t last=0;
   if(millis()-last<MONITOR_INTERVAL_MS)return;
   last=millis();
-  Serial.println(F("\\n=== SIM_RUL MONITOR ==="));
+  Serial.println(F("\n=== SIM_RUL MONITOR ==="));
   Serial.print(F("STEERING: "));Serial.println(readEncoder()-centerOffset);
   Serial.print(F("GAS: "));Serial.println(analogStable(PIN_GAS));
   Serial.print(F("BRAKE: "));Serial.println(analogStable(PIN_BRAKE));
@@ -355,7 +355,7 @@ void loop(){
   ignition.update();  centerSwitch.update();
   if(!calValid()){
     if(fstage!=FStage::ERROR&&fstage!=FStage::DONE) firstCalibration();
-    else if(fstage==FStage::ERROR) { cal.steeringExtreme=1200; updateController(true); delay(50); }
+    else if(fstage==FStage::ERROR) { cal.steeringExtreme=1200; updateController(false); delay(50); }
     printDiagnostics();
     return;
   }
