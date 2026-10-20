@@ -32,34 +32,33 @@ constexpr int BRAKE_MIN = 0, BRAKE_MAX = 1023;
 constexpr int CLUTCH_MIN = 0, CLUTCH_MAX = 1023;
 constexpr int GEAR_X_MIN = 0, GEAR_X_MAX = 1023;
 constexpr int GEAR_Y_MIN = 0, GEAR_Y_MAX = 1023;
-// ДИАПАЗОНЫ ПЕРЕДАЧ
-// Значения X/Y нормализуются в диапазон 0–1023.
-// Передача включается, только если ОБЕ координаты попали в её диапазон.
-// Настрой диапазоны по показаниям своей КПП в режиме монитора.
-// Значения передач 2–6 ниже — примеры, а не готовая калибровка.
-// Передача 1 — пример заданного диапазона.
-constexpr int GEAR_1_X_MIN = 100, GEAR_1_X_MAX = 200;
-constexpr int GEAR_1_Y_MIN = 100, GEAR_1_Y_MAX = 200;
+// ДИАПАЗОНЫ КПП
+// Передача определяется, только если X И Y одновременно попадают в её зону.
+// Значения датчиков сначала переводятся в диапазон 0–1023.
+
+// Передача 1.
+constexpr int GEAR_1_X_MIN =   0, GEAR_1_X_MAX =  100;
+constexpr int GEAR_1_Y_MIN =   0, GEAR_1_Y_MAX =  100;
 
 // Передача 2.
-constexpr int GEAR_2_X_MIN = 100, GEAR_2_X_MAX = 200;
-constexpr int GEAR_2_Y_MIN = 300, GEAR_2_Y_MAX = 400;
+constexpr int GEAR_2_X_MIN = 700, GEAR_2_X_MAX = 1023;
+constexpr int GEAR_2_Y_MIN =   0, GEAR_2_Y_MAX =  100;
 
 // Передача 3.
-constexpr int GEAR_3_X_MIN = 100, GEAR_3_X_MAX = 200;
-constexpr int GEAR_3_Y_MIN = 500, GEAR_3_Y_MAX = 600;
+constexpr int GEAR_3_X_MIN =   0, GEAR_3_X_MAX =  100;
+constexpr int GEAR_3_Y_MIN = 400, GEAR_3_Y_MAX =  600;
 
 // Передача 4.
-constexpr int GEAR_4_X_MIN = 300, GEAR_4_X_MAX = 400;
-constexpr int GEAR_4_Y_MIN = 100, GEAR_4_Y_MAX = 200;
+constexpr int GEAR_4_X_MIN = 700, GEAR_4_X_MAX = 1023;
+constexpr int GEAR_4_Y_MIN = 400, GEAR_4_Y_MAX =  600;
 
 // Передача 5.
-constexpr int GEAR_5_X_MIN = 300, GEAR_5_X_MAX = 400;
-constexpr int GEAR_5_Y_MIN = 300, GEAR_5_Y_MAX = 400;
+constexpr int GEAR_5_X_MIN = 300, GEAR_5_X_MAX =  400;
+constexpr int GEAR_5_Y_MIN = 700, GEAR_5_Y_MAX = 1023;
 
 // Передача 6.
-constexpr int GEAR_6_X_MIN = 300, GEAR_6_X_MAX = 400;
-constexpr int GEAR_6_Y_MIN = 500, GEAR_6_Y_MAX = 600;
+constexpr int GEAR_6_X_MIN = 700, GEAR_6_X_MAX = 1023;
+constexpr int GEAR_6_Y_MIN = 700, GEAR_6_Y_MAX = 1023;
 // true — использовать сохранённую калибровку педалей, если она действительна.
 constexpr bool USE_SAVED_PEDAL_CALIBRATION = true;
 
@@ -152,10 +151,22 @@ void saveCal() {
   EEPROM.put(0, cal);
 }
 
-// В игру передаются только оси руля и педалей. Координаты КПП используются внутри программы.
-Joystick_ Joystick(JOYSTICK_DEFAULT_REPORT_ID,JOYSTICK_TYPE_JOYSTICK,8,0,
-  true,false,false,true,true,true,false,false,false,false,false);
-constexpr uint8_t HID_IGNITION=0, HID_HIGH_GEAR=1, HID_GEAR_BASE=2;
+// USB HID-устройство игрового типа: 8 кнопок и четыре оси.
+// X — руль; Rx — газ; Ry — тормоз; Rz — сцепление.
+// Оси X/Y самой КПП в HID-устройство не включены.
+Joystick_ Joystick(
+  JOYSTICK_DEFAULT_REPORT_ID,
+  JOYSTICK_TYPE_JOYSTICK,
+  8, 0,
+  true, false, false,  // X, Y, Z
+  true, true, true,    // Rx, Ry, Rz
+  false, false, false, false, false
+);
+
+// Номера кнопок в игровом контроллере.
+constexpr uint8_t HID_IGNITION = 0;
+constexpr uint8_t HID_HIGH_GEAR = 1;
+constexpr uint8_t HID_GEAR_BASE = 2;
 
 // Текущее значение энкодера. Переменные меняются также из прерывания.
 volatile long encoderRaw = 0;
@@ -669,24 +680,72 @@ void updateGear(int x, int y) {
 // ════════════════════════════════════════════════════════════════════
 // 9. ОТПРАВКА ДАННЫХ В ИГРУ И РЕЖИМ МОНИТОРА
 // ════════════════════════════════════════════════════════════════════
-void updateController(bool sendHid){
-  ignition.update();highGear.update();
-  uint16_t gr=analogStable(PIN_GAS),br=analogStable(PIN_BRAKE),cl=analogStable(PIN_CLUTCH);
-  uint16_t xr=analogStable(PIN_GEAR_X),yr=analogStable(PIN_GEAR_Y);
-  int gmn,gmx,bmn,bmx,cmn,cmx; pedalRanges(gmn,gmx,bmn,bmx,cmn,cmx);
-  int gas=mapPedal(gr,gmn,gmx),brake=mapPedal(br,bmn,bmx),clutch=mapPedal(cl,cmn,cmx);
-  int gx=mapAxis(xr,GEAR_X_MIN,GEAR_X_MAX),gy=mapAxis(yr,GEAR_Y_MIN,GEAR_Y_MAX);
-  updateGear(gx,gy);
+void updateController(bool sendHid) {
+  ignition.update();
+  highGear.update();
 
-  long steer=readEncoder()-centerOffset,e=cal.steeringExtreme;
-  steer=constrain(steer,-e,e);steer=map(steer,-e,e,STEERING_HID_MIN,STEERING_HID_MAX);
-  Joystick.setButton(HID_IGNITION,ignition.pressed());
-  Joystick.setButton(HID_HIGH_GEAR,highGearLatched);
-  for(uint8_t i=0;i<6;++i)Joystick.setButton(HID_GEAR_BASE+i,activeGear==(int8_t)(i+1));
-  // HID-оси: X — руль, Rx — газ, Ry — тормоз, Rz — сцепление.
-  Joystick.setXAxis(steer);Joystick.setRxAxis(gas);Joystick.setRyAxis(brake);Joystick.setRzAxis(clutch);
-  // gx и gy нужны только для распознавания передачи и не отправляются в USB HID.
-  if(sendHid)Joystick.sendState();
+  // Считываем датчики педалей и координаты рычага КПП.
+  const uint16_t gasRaw = analogStable(PIN_GAS);
+  const uint16_t brakeRaw = analogStable(PIN_BRAKE);
+  const uint16_t clutchRaw = analogStable(PIN_CLUTCH);
+  const uint16_t gearXRaw = analogStable(PIN_GEAR_X);
+  const uint16_t gearYRaw = analogStable(PIN_GEAR_Y);
+
+  // Переводим педали в диапазон 0–1023.
+  int gasMin, gasMax;
+  int brakeMin, brakeMax;
+  int clutchMin, clutchMax;
+  pedalRanges(
+    gasMin, gasMax,
+    brakeMin, brakeMax,
+    clutchMin, clutchMax
+  );
+
+  const int gas = mapPedal(gasRaw, gasMin, gasMax);
+  const int brake = mapPedal(brakeRaw, brakeMin, brakeMax);
+  const int clutch = mapPedal(clutchRaw, clutchMin, clutchMax);
+
+  // Координаты КПП нужны только для распознавания передачи.
+  const int gearX = mapAxis(gearXRaw, GEAR_X_MIN, GEAR_X_MAX);
+  const int gearY = mapAxis(gearYRaw, GEAR_Y_MIN, GEAR_Y_MAX);
+  updateGear(gearX, gearY);
+
+  // Нормализуем угол руля по сохранённому пределу калибровки.
+  long steering = readEncoder() - centerOffset;
+  const long steeringLimit = cal.steeringExtreme;
+
+  if (steeringLimit > 0) {
+    steering = constrain(steering, -steeringLimit, steeringLimit);
+    steering = map(
+      steering,
+      -steeringLimit, steeringLimit,
+      STEERING_HID_MIN, STEERING_HID_MAX
+    );
+  } else {
+    steering = 0;
+  }
+
+  // Отправляем в HID состояния зажигания, повышенной передачи и передач 1–6.
+  Joystick.setButton(HID_IGNITION, ignition.pressed());
+  Joystick.setButton(HID_HIGH_GEAR, highGearLatched);
+
+  for (uint8_t i = 0; i < 6; ++i) {
+    Joystick.setButton(
+      HID_GEAR_BASE + i,
+      activeGear == (int8_t)(i + 1)
+    );
+  }
+
+  // Важно: диапазоны этих осей заданы в setup().
+  Joystick.setXAxis(steering);
+  Joystick.setRxAxis(gas);
+  Joystick.setRyAxis(brake);
+  Joystick.setRzAxis(clutch);
+
+  // Режим монитора читает датчики, но не посылает игровые события.
+  if (sendHid) {
+    Joystick.sendState();
+  }
 }
 void printMonitor() {
   static uint32_t lastPrint = 0;
@@ -762,7 +821,15 @@ void setup(){
   encoderLastAB=(digitalRead(PIN_ENC_A)<<1)|digitalRead(PIN_ENC_B);
   ignition.begin(PIN_IGNITION);centerSwitch.begin(PIN_CENTER_SW);highGear.begin(PIN_HIGH_GEAR);
   analogReference(DEFAULT);
-  Joystick.setXAxisRange(STEERING_HID_MIN,STEERING_HID_MAX);Joystick.begin(false);
+  // Настраиваем диапазоны HID-осей, чтобы игра получала полный ход педалей.
+  Joystick.setXAxisRange(STEERING_HID_MIN, STEERING_HID_MAX);
+  Joystick.setRxAxisRange(0, 1023);  // Газ: отпущен → нажат.
+  Joystick.setRyAxisRange(0, 1023);  // Тормоз: отпущен → нажат.
+  Joystick.setRzAxisRange(0, 1023);  // Сцепление: отпущено → нажато.
+
+  // Регистрируем USB-устройство как игровой контроллер.
+  // Состояние отправляется вручную из updateController().
+  Joystick.begin(false);
   attachInterrupt(digitalPinToInterrupt(PIN_ENC_A),encoderISR,CHANGE);
   attachInterrupt(digitalPinToInterrupt(PIN_ENC_B),encoderISR,CHANGE);
   delay(100);ignition.update();EEPROM.get(0,cal);
@@ -770,10 +837,11 @@ void setup(){
     cal.steeringExtreme=1200; // Временный диапазон руля, пока калибровка ещё не выполнена.
     if(ignition.pressed())setStage(FStage::ZERO);
     else { fstage=FStage::ERROR; printStageInstructions(); }
-  }else{
+  } else {
     // Если «Зажигание» удерживается при запуске, включается режим монитора.
     // Поиск нулевого положения руля всё равно выполняется первым.
-    fstage=FStage::DONE;
+    fstage = FStage::DONE;
+    Serial.println(F("[USB HID] Игровой контроллер зарегистрирован. Оси: руль, газ, тормоз, сцепление; кнопки: зажигание, повышенная передача, 1–6."));
   }
 }
 void loop() {
