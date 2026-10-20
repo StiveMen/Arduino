@@ -1,36 +1,77 @@
-/* Sim_Rul V1.0 — Arduino Pro Micro 5V/16MHz
- * Gearbox X/Y are processed internally and are NOT exposed as HID axes.
- * No button matrix. Ignition + High Gear + 6 virtual gears = 8 HID buttons.
- * First start: full calibration with Ignition held at power-up.
- * Later starts: steering zero calibration only; center switch is then ignored.
- * Ignition held at boot after calibration = monitor mode, no HID state is sent.
+/*
+ * ╔══════════════════════════════════════════════════════════════════╗
+ * ║                    SIM_RUL V1.0                                  ║
+ * ║             Контроллер руля, педалей и КПП                       ║
+ * ╚══════════════════════════════════════════════════════════════════╝
+ *
+ * Плата: Arduino Pro Micro, 5 В / 16 МГц.
+ *
+ * КАК РАБОТАЕТ ПРОШИВКА
+ * • Руль и три педали передаются в игру как аналоговые HID-оси.
+ * • КПП распознаётся по двум аналоговым координатам X/Y.
+ *   Координаты КПП не передаются в игру как оси — вместо них
+ *   отправляются отдельные кнопки передач 1–6.
+ * • Кнопка «Зажигание» и кнопка повышенной передачи тоже являются HID-кнопками.
+ * • При первом запуске выполняется калибровка руля и педалей.
+ * • При обычном запуске определяется нулевое положение руля.
+ * • Если при включении удерживать «Зажигание», запускается режим монитора:
+ *   данные выводятся в Serial Monitor, но HID-состояние в игру не отправляется.
+ *
+ * ВАЖНО: распиновка и назначение выводов сохранены без изменений.
  */
 #include <Arduino.h>
 #include <EEPROM.h>
 #include <Joystick.h>
 
-// ===== EASY MANUAL CALIBRATION =====
-constexpr int GAS_MIN=0, GAS_MAX=1023;
-constexpr int BRAKE_MIN=0, BRAKE_MAX=1023;
-constexpr int CLUTCH_MIN=0, CLUTCH_MAX=1023;
-constexpr int GEAR_X_MIN=0, GEAR_X_MAX=1023;
-constexpr int GEAR_Y_MIN=0, GEAR_Y_MAX=1023;
-// Прямоугольные зоны передач в координатах 0..1023 после нормализации датчиков.
-// Значения для передач 2–6 — стартовые примеры: обязательно настрой их под свою КПП.
-constexpr int GEAR_1_X_MIN=100, GEAR_1_X_MAX=200, GEAR_1_Y_MIN=100, GEAR_1_Y_MAX=200;
-constexpr int GEAR_2_X_MIN=100, GEAR_2_X_MAX=200, GEAR_2_Y_MIN=300, GEAR_2_Y_MAX=400;
-constexpr int GEAR_3_X_MIN=100, GEAR_3_X_MAX=200, GEAR_3_Y_MIN=500, GEAR_3_Y_MAX=600;
-constexpr int GEAR_4_X_MIN=300, GEAR_4_X_MAX=400, GEAR_4_Y_MIN=100, GEAR_4_Y_MAX=200;
-constexpr int GEAR_5_X_MIN=300, GEAR_5_X_MAX=400, GEAR_5_Y_MIN=300, GEAR_5_Y_MAX=400;
-constexpr int GEAR_6_X_MIN=300, GEAR_6_X_MAX=400, GEAR_6_Y_MIN=500, GEAR_6_Y_MAX=600;
+// ════════════════════════════════════════════════════════════════════
+// 1. НАСТРОЙКИ И КАЛИБРОВКА
+// ════════════════════════════════════════════════════════════════════
+// Рабочие пределы АЦП педалей и датчиков КПП.
+constexpr int GAS_MIN = 0, GAS_MAX = 1023;
+constexpr int BRAKE_MIN = 0, BRAKE_MAX = 1023;
+constexpr int CLUTCH_MIN = 0, CLUTCH_MAX = 1023;
+constexpr int GEAR_X_MIN = 0, GEAR_X_MAX = 1023;
+constexpr int GEAR_Y_MIN = 0, GEAR_Y_MAX = 1023;
+// ДИАПАЗОНЫ ПЕРЕДАЧ
+// Значения X/Y нормализуются в диапазон 0–1023.
+// Передача включается, только если ОБЕ координаты попали в её диапазон.
+// Настрой диапазоны по показаниям своей КПП в режиме монитора.
+// Значения передач 2–6 ниже — примеры, а не готовая калибровка.
+// Передача 1 — пример заданного диапазона.
+constexpr int GEAR_1_X_MIN = 100, GEAR_1_X_MAX = 200;
+constexpr int GEAR_1_Y_MIN = 100, GEAR_1_Y_MAX = 200;
+
+// Передача 2.
+constexpr int GEAR_2_X_MIN = 100, GEAR_2_X_MAX = 200;
+constexpr int GEAR_2_Y_MIN = 300, GEAR_2_Y_MAX = 400;
+
+// Передача 3.
+constexpr int GEAR_3_X_MIN = 100, GEAR_3_X_MAX = 200;
+constexpr int GEAR_3_Y_MIN = 500, GEAR_3_Y_MAX = 600;
+
+// Передача 4.
+constexpr int GEAR_4_X_MIN = 300, GEAR_4_X_MAX = 400;
+constexpr int GEAR_4_Y_MIN = 100, GEAR_4_Y_MAX = 200;
+
+// Передача 5.
+constexpr int GEAR_5_X_MIN = 300, GEAR_5_X_MAX = 400;
+constexpr int GEAR_5_Y_MIN = 300, GEAR_5_Y_MAX = 400;
+
+// Передача 6.
+constexpr int GEAR_6_X_MIN = 300, GEAR_6_X_MAX = 400;
+constexpr int GEAR_6_Y_MIN = 500, GEAR_6_Y_MAX = 600;
 constexpr bool USE_SAVED_PEDAL_CALIBRATION=true;
 
-// ===== PINS =====
+// ════════════════════════════════════════════════════════════════════
+// 2. РАСПИНОВКА — НЕ МЕНЯТЬ БЕЗ ПЕРЕСМОТРА СХЕМЫ
+// ════════════════════════════════════════════════════════════════════
 constexpr uint8_t PIN_GAS=A1, PIN_BRAKE=A2, PIN_CLUTCH=A3;
 constexpr uint8_t PIN_GEAR_X=A8, PIN_GEAR_Y=A9;
 constexpr uint8_t PIN_ENC_A=0, PIN_ENC_B=1;
 constexpr uint8_t PIN_IGNITION=5, PIN_CENTER_SW=6, PIN_HIGH_GEAR=7;
-// ===== PARAMETERS =====
+// ════════════════════════════════════════════════════════════════════
+// 3. СЛУЖЕБНЫЕ ПАРАМЕТРЫ
+// ════════════════════════════════════════════════════════════════════
 constexpr uint16_t BUTTON_DEBOUNCE_MS=25;
 constexpr uint32_t ZERO_CAL_TIMEOUT_MS=15000UL;
 constexpr uint32_t FIRST_CAL_TIMEOUT_MS=30000UL;
@@ -38,29 +79,59 @@ constexpr uint32_t MONITOR_INTERVAL_MS=250;
 constexpr long MAX_ENCODER_TRAVEL=200000L;
 constexpr int32_t STEERING_HID_MIN=-32767L, STEERING_HID_MAX=32767L;
 constexpr uint16_t EEPROM_MAGIC=0x5347;
-constexpr uint8_t EEPROM_VERSION=5; // Зоны передач задаются константами в коде.
+constexpr uint8_t EEPROM_VERSION = 5;  // Версия формата данных в EEPROM.
 
-struct GearCal { int16_t x,y; }; // Поля оставлены для совместимости структуры, зоны передач ими не задаются.
+// Структура сохранённых данных калибровки.
+// Поля gear оставлены в структуре для совместимости формата;
+// зоны передач задаются константами в начале этого файла.
+struct GearCal {
+  int16_t x, y;
+};
+
 struct CalData {
-  uint16_t magic; uint8_t version; uint8_t reserved;
+  uint16_t magic;
+  uint8_t version;
+  uint8_t reserved;
   int32_t steeringExtreme;
-  uint16_t gasMin,gasMax,brakeMin,brakeMax,clutchMin,clutchMax;
+
+  uint16_t gasMin, gasMax;
+  uint16_t brakeMin, brakeMax;
+  uint16_t clutchMin, clutchMax;
+
   GearCal gear[6];
   uint16_t checksum;
 };
+
 CalData cal{};
 
-uint16_t checksum(const CalData &d){
-  const uint8_t *p=reinterpret_cast<const uint8_t*>(&d); uint32_t s=0;
-  for(size_t i=0;i<sizeof(CalData)-sizeof(d.checksum);++i) s=(s+p[i])&0xFFFF;
-  return (uint16_t)s;
+// Рассчитывает контрольную сумму сохранённых данных.
+uint16_t checksum(const CalData &data) {
+  const uint8_t *bytes = reinterpret_cast<const uint8_t *>(&data);
+  uint32_t sum = 0;
+
+  for (size_t i = 0; i < sizeof(CalData) - sizeof(data.checksum); ++i) {
+    sum = (sum + bytes[i]) & 0xFFFF;
+  }
+
+  return static_cast<uint16_t>(sum);
 }
-bool calValid(){
-  return cal.magic==EEPROM_MAGIC && cal.version==EEPROM_VERSION &&
-         cal.steeringExtreme>10 && cal.checksum==checksum(cal);
+
+// Проверяет, что калибровка сохранена и не повреждена.
+bool calValid() {
+  return cal.magic == EEPROM_MAGIC &&
+         cal.version == EEPROM_VERSION &&
+         cal.steeringExtreme > 10 &&
+         cal.checksum == checksum(cal);
 }
-void saveCal(){ cal.magic=EEPROM_MAGIC; cal.version=EEPROM_VERSION; cal.reserved=0;
-  cal.checksum=checksum(cal); EEPROM.put(0,cal); }
+
+// Записывает текущую калибровку в энергонезависимую память.
+void saveCal() {
+  cal.magic = EEPROM_MAGIC;
+  cal.version = EEPROM_VERSION;
+  cal.reserved = 0;
+  cal.checksum = checksum(cal);
+  EEPROM.put(0, cal);
+}
 
 // Expose only steering and pedal axes. Gearbox X/Y are internal sensors.
 Joystick_ Joystick(JOYSTICK_DEFAULT_REPORT_ID,JOYSTICK_TYPE_JOYSTICK,8,0,
@@ -108,7 +179,9 @@ void pedalRanges(int &gmn,int &gmx,int &bmn,int &bmx,int &cmn,int &cmx){
   else {gmn=GAS_MIN;gmx=GAS_MAX;bmn=BRAKE_MIN;bmx=BRAKE_MAX;cmn=CLUTCH_MIN;cmx=CLUTCH_MAX;}
 }
 
-// ===== IGNITION EDGE =====
+// ════════════════════════════════════════════════════════════════════
+// 4. ОБРАБОТКА НАЖАТИЯ КНОПКИ «ЗАЖИГАНИЕ»
+// ════════════════════════════════════════════════════════════════════
 bool ignPrev=false,ignArmed=false;
 void armIgn(){ignPrev=ignition.pressed();ignArmed=!ignPrev;}
 bool ignEdge(){
@@ -116,10 +189,16 @@ bool ignEdge(){
   bool e=now&&!ignPrev&&ignArmed; if(e)ignArmed=false; ignPrev=now; return e;
 }
 
-// ===== STEERING ZERO =====
-// Right -> left. When center switch is hit, encoder is reset to 0.
-// Continue left until the switch releases; that release count is the zero.
-// Then move right for verification. After this function the switch is ignored.
+// ════════════════════════════════════════════════════════════════════
+// 5. ПОИСК НУЛЕВОГО ПОЛОЖЕНИЯ РУЛЯ
+// ════════════════════════════════════════════════════════════════════
+// Алгоритм поиска нуля:
+// 1. Повернуть руль вправо.
+// 2. Медленно повернуть влево до срабатывания концевика.
+// 3. Продолжить движение влево до отпускания концевика.
+// 4. Сохранить количество импульсов до отпускания как нулевое смещение.
+// 5. Немного повернуть вправо для проверки.
+// После калибровки концевик больше не участвует в управлении рулём.
 bool zeroCalibrate(){
   uint32_t start=millis();
   long prev=readEncoder();
@@ -136,9 +215,9 @@ bool zeroCalibrate(){
 
     if(d>0)sawRight=true;
 
-    // The switch must be reached while the wheel is moving left.
-    // Do not require a non-zero encoder delta in the exact millisecond
-    // when the debounced switch changes state.
+    // Концевик должен сработать после движения руля вправо и при возврате влево.
+    // Из-за подавления дребезга изменение его состояния может не совпасть
+    // по времени с импульсом энкодера.
     if(!pressed && centerSwitch.pressed()){
       if(!sawRight)return false;
       resetEncoder();
@@ -163,7 +242,7 @@ bool zeroCalibrate(){
 
   if(centerOffset==0)return false;
 
-  // Reliability check: after zero is found, turn right again.
+  // Проверка: после нахождения нуля поверни руль вправо.
   uint32_t vstart=millis();
   long verify=readEncoder();
   while(millis()-vstart<ZERO_CAL_TIMEOUT_MS){
@@ -173,7 +252,9 @@ bool zeroCalibrate(){
   return false;
 }
 
-// ===== FIRST CALIBRATION =====
+// ════════════════════════════════════════════════════════════════════
+// 6. ПЕРВИЧНАЯ КАЛИБРОВКА
+// ════════════════════════════════════════════════════════════════════
 enum FStage:uint8_t{ZERO,STEERING_EXTREME,PEDAL_MIN,PEDAL_MAX,SAVE,ERROR,DONE};
 FStage fstage=FStage::ZERO;
 uint32_t fstarted=0;
@@ -216,8 +297,8 @@ void setStage(uint8_t s){
   printStageInstructions();
 }
 void blinkSaved(){
-  // D17 is occupied by the center switch, so no onboard LED is used as a
-  // calibration indicator. USB Serial is the confirmation channel.
+  // Отдельный светодиод для индикации калибровки не используется.
+  // Подтверждение выводится в Serial Monitor.
   Serial.println(F("CALIBRATION_SAVED"));
 }
 void firstCalibration(){
@@ -239,8 +320,8 @@ void firstCalibration(){
     return;
   }
   if(fstage==FStage::PEDAL_MAX){
-    // Ищем противоположный край относительно положения покоя; работает
-    // даже если потенциометр подключён в обратном направлении.
+    // Запоминаем крайнее значение каждой педали относительно положения покоя.
+    // Это работает и при обратном направлении потенциометра.
     uint16_t g=analogStable(PIN_GAS),b=analogStable(PIN_BRAKE),c=analogStable(PIN_CLUTCH);
     if(abs((int)g-(int)cal.gasMin)>abs((int)pedalPeakG-(int)cal.gasMin))pedalPeakG=g;
     if(abs((int)b-(int)cal.brakeMin)>abs((int)pedalPeakB-(int)cal.brakeMin))pedalPeakB=b;
@@ -253,14 +334,14 @@ void firstCalibration(){
     return;
   }
   if(fstage==FStage::SAVE){
-    // User places gearbox in neutral and holds Ignition to save.
+    // Для сохранения переведи КПП в нейтраль и удерживай «Зажигание».
     if(ignition.pressed()){
       if(saveHoldStarted==0)saveHoldStarted=millis();
       if(millis()-saveHoldStarted>=1200){
       saveCal();
       blinkSaved();
-      // Keep the calibration result in EEPROM and require a clean reboot.
-      // The user can release Ignition and power-cycle/reset the controller.
+      // Результат уже сохранён в EEPROM.
+      // Перезапусти контроллер, чтобы начать работу с новой калибровкой.
       fstage=FStage::DONE;
       justSavedCalibration=true;
     }
@@ -268,10 +349,14 @@ void firstCalibration(){
   }
 }
 
-// ===== GEAR + HIGH GEAR =====
+// ════════════════════════════════════════════════════════════════════
+// 7. РАСПОЗНАВАНИЕ ПЕРЕДАЧ И ПОВЫШЕННАЯ ПЕРЕДАЧА
+// ════════════════════════════════════════════════════════════════════
 int8_t activeGear=0; bool highGearLatched=false;
 
-// ===== PERMANENT SERIAL DIAGNOSTICS =====
+// ════════════════════════════════════════════════════════════════════
+// 8. ДИАГНОСТИКА В SERIAL MONITOR
+// ════════════════════════════════════════════════════════════════════
 const __FlashStringHelper* stageName(){
   switch(fstage){
     case FStage::ZERO: return F("ZERO");
@@ -326,14 +411,16 @@ void updateGear(int x,int y){
   const int8_t previousGear=activeGear;
   const bool highPressed=highGear.pressed();
   activeGear=findGear(x,y);
-  // Захват повышенной передачи только если кнопка нажата в выбранной передаче.
+  // Нажатие кнопки повышенной передачи фиксируется, если выбрана одна из передач.
   if(highPressed && activeGear!=0) highGearLatched=true;
-  // При выходе из передачи защёлка сбрасывается, если кнопка уже отпущена.
+  // При переходе в нейтраль защёлка сбрасывается, если кнопка уже отпущена.
   if(activeGear==0 && !highPressed) highGearLatched=false;
   (void)previousGear;
 }
 
-// ===== HID / MONITOR =====
+// ════════════════════════════════════════════════════════════════════
+// 9. ОТПРАВКА ДАННЫХ В ИГРУ И РЕЖИМ МОНИТОРА
+// ════════════════════════════════════════════════════════════════════
 void updateController(bool sendHid){
   ignition.update();highGear.update();
   uint16_t gr=analogStable(PIN_GAS),br=analogStable(PIN_BRAKE),cl=analogStable(PIN_CLUTCH);
@@ -348,9 +435,9 @@ void updateController(bool sendHid){
   Joystick.setButton(HID_IGNITION,ignition.pressed());
   Joystick.setButton(HID_HIGH_GEAR,highGearLatched);
   for(uint8_t i=0;i<6;++i)Joystick.setButton(HID_GEAR_BASE+i,activeGear==(int8_t)(i+1));
-  // HID: X=руль, Rx=газ, Ry=тормоз, Rz=сцепление.
+  // HID-оси: X — руль, Rx — газ, Ry — тормоз, Rz — сцепление.
   Joystick.setXAxis(steer);Joystick.setRxAxis(gas);Joystick.setRyAxis(brake);Joystick.setRzAxis(clutch);
-  // gx/gy are used only by updateGear(); never publish gearbox axes to USB HID.
+  // gx и gy нужны только для распознавания передачи и не отправляются в USB HID.
   if(sendHid)Joystick.sendState();
 }
 void printMonitor(){
@@ -380,7 +467,9 @@ void printMonitor(){
 }
 void monitor(){ printDiagnostics(); }
 
-// ===== SETUP / LOOP =====
+// ════════════════════════════════════════════════════════════════════
+// 10. ЗАПУСК И ОСНОВНОЙ ЦИКЛ ПРОГРАММЫ
+// ════════════════════════════════════════════════════════════════════
 void setup(){
   Serial.begin(115200);
   pinMode(PIN_ENC_A,INPUT_PULLUP);pinMode(PIN_ENC_B,INPUT_PULLUP);
@@ -392,12 +481,12 @@ void setup(){
   attachInterrupt(digitalPinToInterrupt(PIN_ENC_B),encoderISR,CHANGE);
   delay(100);ignition.update();EEPROM.get(0,cal);
   if(!calValid()){
-    cal.steeringExtreme=1200; // Резервный диапазон оси руля до калибровки.
+    cal.steeringExtreme=1200; // Временный диапазон руля, пока калибровка ещё не выполнена.
     if(ignition.pressed())setStage(FStage::ZERO);
     else { fstage=FStage::ERROR; printStageInstructions(); }
   }else{
-    // Holding Ignition at boot selects monitor mode after zero calibration.
-    // The zero calibration itself is still performed first.
+    // Если «Зажигание» удерживается при запуске, включается режим монитора.
+    // Поиск нулевого положения руля всё равно выполняется первым.
     fstage=FStage::DONE;
   }
 }
