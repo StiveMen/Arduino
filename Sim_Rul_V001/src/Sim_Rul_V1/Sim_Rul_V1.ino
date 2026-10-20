@@ -60,25 +60,44 @@ constexpr int GEAR_5_Y_MIN = 300, GEAR_5_Y_MAX = 400;
 // Передача 6.
 constexpr int GEAR_6_X_MIN = 300, GEAR_6_X_MAX = 400;
 constexpr int GEAR_6_Y_MIN = 500, GEAR_6_Y_MAX = 600;
-constexpr bool USE_SAVED_PEDAL_CALIBRATION=true;
+// true — использовать сохранённую калибровку педалей, если она действительна.
+constexpr bool USE_SAVED_PEDAL_CALIBRATION = true;
 
 // ════════════════════════════════════════════════════════════════════
 // 2. РАСПИНОВКА — НЕ МЕНЯТЬ БЕЗ ПЕРЕСМОТРА СХЕМЫ
 // ════════════════════════════════════════════════════════════════════
-constexpr uint8_t PIN_GAS=A1, PIN_BRAKE=A2, PIN_CLUTCH=A3;
-constexpr uint8_t PIN_GEAR_X=A8, PIN_GEAR_Y=A9;
-constexpr uint8_t PIN_ENC_A=0, PIN_ENC_B=1;
-constexpr uint8_t PIN_IGNITION=5, PIN_CENTER_SW=6, PIN_HIGH_GEAR=7;
+// Педали.
+constexpr uint8_t PIN_GAS = A1;
+constexpr uint8_t PIN_BRAKE = A2;
+constexpr uint8_t PIN_CLUTCH = A3;
+
+// Два аналоговых датчика положения КПП.
+constexpr uint8_t PIN_GEAR_X = A8;
+constexpr uint8_t PIN_GEAR_Y = A9;
+
+// Энкодер руля.
+constexpr uint8_t PIN_ENC_A = 0;
+constexpr uint8_t PIN_ENC_B = 1;
+
+// Кнопки: зажигание, концевик нуля руля, повышенная передача.
+constexpr uint8_t PIN_IGNITION = 5;
+constexpr uint8_t PIN_CENTER_SW = 6;
+constexpr uint8_t PIN_HIGH_GEAR = 7;
 // ════════════════════════════════════════════════════════════════════
 // 3. СЛУЖЕБНЫЕ ПАРАМЕТРЫ
 // ════════════════════════════════════════════════════════════════════
-constexpr uint16_t BUTTON_DEBOUNCE_MS=25;
-constexpr uint32_t ZERO_CAL_TIMEOUT_MS=15000UL;
-constexpr uint32_t FIRST_CAL_TIMEOUT_MS=30000UL;
-constexpr uint32_t MONITOR_INTERVAL_MS=250;
-constexpr long MAX_ENCODER_TRAVEL=200000L;
-constexpr int32_t STEERING_HID_MIN=-32767L, STEERING_HID_MAX=32767L;
-constexpr uint16_t EEPROM_MAGIC=0x5347;
+// Подавление дребезга кнопок и интервалы ожидания.
+constexpr uint16_t BUTTON_DEBOUNCE_MS = 25;
+constexpr uint32_t ZERO_CAL_TIMEOUT_MS = 15000UL;
+constexpr uint32_t FIRST_CAL_TIMEOUT_MS = 30000UL;
+constexpr uint32_t MONITOR_INTERVAL_MS = 250;
+
+// Диапазон оси руля, который поддерживает USB HID.
+constexpr int32_t STEERING_HID_MIN = -32767L;
+constexpr int32_t STEERING_HID_MAX = 32767L;
+
+// Маркер и версия структуры, хранящейся в EEPROM.
+constexpr uint16_t EEPROM_MAGIC = 0x5347;
 constexpr uint8_t EEPROM_VERSION = 5;  // Версия формата данных в EEPROM.
 
 // Структура сохранённых данных калибровки.
@@ -133,7 +152,7 @@ void saveCal() {
   EEPROM.put(0, cal);
 }
 
-// Expose only steering and pedal axes. Gearbox X/Y are internal sensors.
+// В игру передаются только оси руля и педалей. Координаты КПП используются внутри программы.
 Joystick_ Joystick(JOYSTICK_DEFAULT_REPORT_ID,JOYSTICK_TYPE_JOYSTICK,8,0,
   true,false,false,true,true,true,false,false,false,false,false);
 constexpr uint8_t HID_IGNITION=0, HID_HIGH_GEAR=1, HID_GEAR_BASE=2;
