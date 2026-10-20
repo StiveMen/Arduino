@@ -240,7 +240,7 @@ int mapAxis(uint16_t value, int minimum, int maximum) {
 }
 
 // Педаль калибруется по двум физическим крайним положениям; поддерживается
-// и обратное направление потенциометра (ADC может уменьшаться при нажатии).
+// и обратное направление потенциометра (значение АЦП может уменьшаться при нажатии).
 // Переводит показание педали в диапазон 0–1023.
 // Поддерживает потенциометр, у которого значение АЦП уменьшается при нажатии.
 int mapPedal(uint16_t raw, uint16_t rest, uint16_t full) {
@@ -425,7 +425,7 @@ void setStage(uint8_t s){
 }
 void blinkSaved(){
   // Отдельный светодиод для индикации калибровки не используется.
-  // Подтверждение выводится в Serial Monitor.
+  // Подтверждение выводится в окне последовательного монитора.
   Serial.println(F("CALIBRATION_SAVED"));
 }
 void firstCalibration(){
@@ -482,7 +482,7 @@ void firstCalibration(){
 int8_t activeGear=0; bool highGearLatched=false;
 
 // ════════════════════════════════════════════════════════════════════
-// 8. ДИАГНОСТИКА В SERIAL MONITOR
+// 8. ДИАГНОСТИКА В ПОСЛЕДОВАТЕЛЬНОМ МОНИТОРЕ
 // ════════════════════════════════════════════════════════════════════
 const __FlashStringHelper* stageName(){
   switch(fstage){
@@ -661,32 +661,58 @@ void setup(){
     fstage=FStage::DONE;
   }
 }
-void loop(){
-  ignition.update();  centerSwitch.update();
-  if(justSavedCalibration){
+void loop() {
+  ignition.update();
+  centerSwitch.update();
+
+  // После сохранения калибровки требуется перезапуск контроллера.
+  if (justSavedCalibration) {
     Serial.println(F("[RESTART REQUIRED] Калибровка сохранена. Перезапусти контроллер; до перезапуска HID не активируется."));
     delay(1000);
     return;
   }
-  if(!calValid()){
-    if(fstage!=FStage::ERROR&&fstage!=FStage::DONE) firstCalibration();
-    else if(fstage==FStage::ERROR) { cal.steeringExtreme=1200; updateController(false); delay(50); }
+
+  // Пока калибровка недействительна, выполняем её шаги или ждём повторного запуска.
+  if (!calValid()) {
+    if (fstage != FStage::ERROR && fstage != FStage::DONE) {
+      firstCalibration();
+    } else if (fstage == FStage::ERROR) {
+      cal.steeringExtreme = 1200;
+      updateController(false);
+      delay(50);
+    }
+
     printDiagnostics();
     return;
   }
-  static bool initialized=false,monitorMode=false;
-  if(!initialized){
-    initialized=true;
-    monitorMode=ignition.pressed();
-    Serial.println(monitorMode?F("[MODE] Serial monitor; HID output disabled."):F("[MODE] Normal HID mode."));
-    if(!zeroCalibrate()){
-      Serial.println(F("[WARN] Steering zero calibration failed. HID remains active; centerOffset=0."));
-      centerOffset=0;
+
+  static bool initialized = false;
+  static bool monitorMode = false;
+
+  // Выполняется один раз после загрузки сохранённой калибровки.
+  if (!initialized) {
+    initialized = true;
+    monitorMode = ignition.pressed();
+
+    if (monitorMode) {
+      Serial.println(F("[MODE] Режим монитора: HID отключён."));
     } else {
-      Serial.println(F("[OK] Steering zero calibration complete."));
+      Serial.println(F("[MODE] Обычный режим: HID включён."));
+    }
+
+    if (!zeroCalibrate()) {
+      Serial.println(F("[WARN] Не удалось найти ноль руля. Используется смещение 0."));
+      centerOffset = 0;
+    } else {
+      Serial.println(F("[OK] Нулевое положение руля найдено."));
     }
   }
+
   updateController(!monitorMode);
-  if(monitorMode) printMonitor();
+
+  if (monitorMode) {
+    printMonitor();
+  }
+
   printDiagnostics();
 }
