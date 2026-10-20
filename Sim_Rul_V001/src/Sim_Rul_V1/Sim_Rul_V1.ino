@@ -319,8 +319,8 @@ void printMonitor(){
   static uint32_t last=0;
   if(millis()-last<MONITOR_INTERVAL_MS)return;
   last=millis();
-  int gx=mapAxis(analogStable(PIN_GEAR_X),GEAR_X_MIN,GEAR_X_MAX);
-  int gy=mapAxis(analogStable(PIN_GEAR_Y),GEAR_Y_MIN,GEAR_Y_MAX);
+  int gx=analogStable(PIN_GEAR_X);
+  int gy=analogStable(PIN_GEAR_Y);
   int gmn,gmx,bmn,bmx,cmn,cmx;pedalRanges(gmn,gmx,bmn,bmx,cmn,cmx);
   Serial.println(F("\\n=== SIM_RUL MONITOR ==="));
   Serial.print(F("STEERING: "));Serial.println(readEncoder()-centerOffset);
