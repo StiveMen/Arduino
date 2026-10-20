@@ -56,8 +56,9 @@ void saveCal(){ cal.magic=EEPROM_MAGIC; cal.version=EEPROM_VERSION; cal.reserved
   cal.checksum=checksum(cal); EEPROM.put(0,cal); }
 
 // Expose only steering and pedal axes. Gearbox X/Y are internal sensors.
+// HID axes: X=steering, Rx=gas, Ry=brake, Rz=clutch. Y and Z are disabled.
 Joystick_ Joystick(JOYSTICK_DEFAULT_REPORT_ID,JOYSTICK_TYPE_JOYSTICK,8,0,
-  true,true,true,true,false,false,false,false,false,false,false);
+  true,false,false,true,true,true,false,false,false,false,false);
 constexpr uint8_t HID_IGNITION=0, HID_HIGH_GEAR=1, HID_GEAR_BASE=2;
 
 volatile long encoderRaw=0;
@@ -309,9 +310,11 @@ void updateController(bool sendHid){
   Joystick.setButton(HID_IGNITION,ignition.pressed());
   Joystick.setButton(HID_HIGH_GEAR,highGearLatched);
   for(uint8_t i=0;i<6;++i)Joystick.setButton(HID_GEAR_BASE+i,activeGear==(int8_t)(i+1));
-  // HID: X=руль, Y=газ, Rx=тормоз, Z=сцепление.
-  // Z назначена сцеплению; тормоз перенесён на Rx, чтобы оси не конфликтовали.
-  Joystick.setXAxis(steer);Joystick.setYAxis(gas);Joystick.setRxAxis(brake);Joystick.setZAxis(clutch);
+  // HID: X=руль, Rx=газ, Ry=тормоз, Rz=сцепление.
+  Joystick.setXAxis(steer);
+  Joystick.setRxAxis(gas);
+  Joystick.setRyAxis(brake);
+  Joystick.setRzAxis(clutch);
   // gx/gy are used only by updateGear(); never publish gearbox axes to USB HID.
   if(sendHid)Joystick.sendState();
 }
@@ -331,7 +334,12 @@ void printMonitor(){
   Serial.print(F("GEAR Y: "));Serial.print(gy);Serial.print(F(" [MIN: "));Serial.print(GEAR_Y_MIN);Serial.print(F(" MAX: "));Serial.print(GEAR_Y_MAX);Serial.println(F("]"));
   Serial.print(F("IGNITION: "));Serial.println(ignition.pressed()?F("ON"):F("OFF"));
   Serial.print(F("HIGH GEAR: "));Serial.println(highGear.pressed()?F("ON"):F("OFF"));
-  for(uint8_t i=0;i<6;++i){Serial.print(F("GEAR "));Serial.print(i+1);Serial.print(F(": "));Serial.println(activeGear==(int8_t)(i+1)?F("ON"):F("OFF"));}
+  for(uint8_t i=0;i<6;++i){
+    Serial.print(F("GEAR "));Serial.print(i+1);
+    Serial.print(F(": "));Serial.print(activeGear==(int8_t)(i+1)?F("ON"):F("OFF"));
+    Serial.print(F(" [TARGET X="));Serial.print(cal.gear[i].x);
+    Serial.print(F(" Y="));Serial.print(cal.gear[i].y);Serial.println(F("]"));
+  }
   Serial.println(F("HID OUTPUT: DISABLED (MONITOR MODE)"));
 }
 void monitor(){ printDiagnostics(); }
