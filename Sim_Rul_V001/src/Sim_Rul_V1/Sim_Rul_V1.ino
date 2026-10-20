@@ -88,6 +88,14 @@ DebouncedInput ignition,centerSwitch,highGear;
 
 uint16_t analogStable(uint8_t p){uint32_t s=0;for(uint8_t i=0;i<4;++i)s+=analogRead(p);return s/4;}
 int mapAxis(uint16_t v,int mn,int mx){if(mx<=mn)return 0;v=constrain((int)v,mn,mx);return map(v,mn,mx,0,1023);}
+// Педаль калибруется по двум физическим крайним положениям; поддерживается
+// и обратное направление потенциометра (ADC может уменьшаться при нажатии).
+int mapPedal(uint16_t raw,uint16_t rest,uint16_t full){
+  if(rest==full)return 0;
+  int lo=min((int)rest,(int)full), hi=max((int)rest,(int)full);
+  int v=constrain((int)raw,lo,hi);
+  return constrain((int)map(v,(int)rest,(int)full,0,1023),0,1023);
+}
 void pedalRanges(int &gmn,int &gmx,int &bmn,int &bmx,int &cmn,int &cmx){
   if(USE_SAVED_PEDAL_CALIBRATION && calValid()){gmn=cal.gasMin;gmx=cal.gasMax;bmn=cal.brakeMin;bmx=cal.brakeMax;cmn=cal.clutchMin;cmx=cal.clutchMax;}
   else {gmn=GAS_MIN;gmx=GAS_MAX;bmn=BRAKE_MIN;bmx=BRAKE_MAX;cmn=CLUTCH_MIN;cmx=CLUTCH_MAX;}
@@ -166,8 +174,44 @@ long steeringPeak=0;
 uint16_t pedalPeakG=0,pedalPeakB=0,pedalPeakC=0;
 uint32_t saveHoldStarted=0;
 
-void setStage(uint8_t s){fstage=(FStage)s;fstarted=millis();armIgn();steeringPeak=0;
-  if(fstage==FStage::PEDAL_MAX){pedalPeakG=cal.gasMin;pedalPeakB=cal.brakeMin;pedalPeakC=cal.clutchMin;}
+void printStageInstructions(){
+  Serial.println();
+  switch(fstage){
+    case FStage::ZERO:
+      Serial.println(F("[CAL 1/4] НОЛЬ РУЛЯ: поверни руль ВПРАВО, затем медленно ВЛЕВО до срабатывания концевика; продолжай влево до отпускания концевика, затем поверни вправо для проверки."));
+      break;
+    case FStage::STEERING_EXTREME:
+      Serial.println(F("[CAL 2/4] РУЛЬ: поверни руль до крайнего положения (полный ход), затем нажми кнопку ЗАЖИГАНИЕ для сохранения диапазона."));
+      break;
+    case FStage::PEDAL_MIN:
+      Serial.println(F("[CAL 3/4] ПЕДАЛИ: отпусти газ, тормоз и сцепление; нажми ЗАЖИГАНИЕ, чтобы записать их исходные положения."));
+      break;
+    case FStage::PEDAL_MAX:
+      Serial.println(F("[CAL 3/4] ПЕДАЛИ: нажми каждую педаль до упора, затем отпусти. После этого нажми ЗАЖИГАНИЕ для сохранения полного диапазона."));
+      break;
+    case FStage::G1: case FStage::G2: case FStage::G3:
+    case FStage::G4: case FStage::G5: case FStage::G6:
+      Serial.print(F("[CAL 4/4] Установи КПП в передачу "));
+      Serial.print((uint8_t)fstage-(uint8_t)FStage::G1+1);
+      Serial.println(F(" и нажми ЗАЖИГАНИЕ для записи координат X/Y."));
+      break;
+    case FStage::SAVE:
+      Serial.println(F("[SAVE] Переведи КПП в НЕЙТРАЛЬ и удерживай ЗАЖИГАНИЕ 1,2 секунды. Калибровка сохранится в EEPROM."));
+      break;
+    case FStage::ERROR:
+      Serial.println(F("[ERROR] Калибровка прервана/не пройдена. Перезапусти контроллер с зажатым ЗАЖИГАНИЕМ и повтори процедуру."));
+      break;
+    case FStage::DONE:
+      Serial.println(F("[OK] Калибровка завершена."));
+      break;
+  }
+}
+void setStage(uint8_t s){
+  fstage=(FStage)s; fstarted=millis(); armIgn(); steeringPeak=0;
+  if(fstage==FStage::PEDAL_MAX){
+    pedalPeakG=cal.gasMin; pedalPeakB=cal.brakeMin; pedalPeakC=cal.clutchMin;
+  }
+  printStageInstructions();
 }
 uint8_t gearStage(){
   switch(fstage){case FStage::G1:return 1;case FStage::G2:return 2;case FStage::G3:return 3;
@@ -197,9 +241,17 @@ void firstCalibration(){
     return;
   }
   if(fstage==FStage::PEDAL_MAX){
+    // Ищем противоположный край относительно положения покоя; работает
+    // даже если потенциометр подключён в обратном направлении.
     uint16_t g=analogStable(PIN_GAS),b=analogStable(PIN_BRAKE),c=analogStable(PIN_CLUTCH);
-    if(g>pedalPeakG)pedalPeakG=g;if(b>pedalPeakB)pedalPeakB=b;if(c>pedalPeakC)pedalPeakC=c;
-    if(ignEdge()){cal.gasMax=pedalPeakG;cal.brakeMax=pedalPeakB;cal.clutchMax=pedalPeakC;setStage(FStage::G1);}
+    if(abs((int)g-(int)cal.gasMin)>abs((int)pedalPeakG-(int)cal.gasMin))pedalPeakG=g;
+    if(abs((int)b-(int)cal.brakeMin)>abs((int)pedalPeakB-(int)cal.brakeMin))pedalPeakB=b;
+    if(abs((int)c-(int)cal.clutchMin)>abs((int)pedalPeakC-(int)cal.clutchMin))pedalPeakC=c;
+    if(ignEdge()){
+      cal.gasMax=pedalPeakG; cal.brakeMax=pedalPeakB; cal.clutchMax=pedalPeakC;
+      if(cal.gasMax==cal.gasMin||cal.brakeMax==cal.brakeMin||cal.clutchMax==cal.clutchMin){setStage(FStage::ERROR);return;}
+      setStage(FStage::G1);
+    }
     return;
   }
   uint8_t gn=gearStage();
@@ -298,7 +350,7 @@ void updateController(bool sendHid){
   uint16_t gr=analogStable(PIN_GAS),br=analogStable(PIN_BRAKE),cl=analogStable(PIN_CLUTCH);
   uint16_t xr=analogStable(PIN_GEAR_X),yr=analogStable(PIN_GEAR_Y);
   int gmn,gmx,bmn,bmx,cmn,cmx; pedalRanges(gmn,gmx,bmn,bmx,cmn,cmx);
-  int gas=mapAxis(gr,gmn,gmx),brake=mapAxis(br,bmn,bmx),clutch=mapAxis(cl,cmn,cmx);
+  int gas=mapPedal(gr,gmn,gmx),brake=mapPedal(br,bmn,bmx),clutch=mapPedal(cl,cmn,cmx);
   int gx=mapAxis(xr,GEAR_X_MIN,GEAR_X_MAX),gy=mapAxis(yr,GEAR_Y_MIN,GEAR_Y_MAX);
   updateGear(gx,gy);
 
@@ -318,13 +370,19 @@ void printMonitor(){
   last=millis();
   Serial.println(F("\n=== SIM_RUL MONITOR ==="));
   Serial.print(F("STEERING: "));Serial.println(readEncoder()-centerOffset);
-  Serial.print(F("GAS: "));Serial.println(analogStable(PIN_GAS));
-  Serial.print(F("BRAKE: "));Serial.println(analogStable(PIN_BRAKE));
-  Serial.print(F("CLUTCH: "));Serial.println(analogStable(PIN_CLUTCH));
+  int gmn,gmx,bmn,bmx,cmn,cmx; pedalRanges(gmn,gmx,bmn,bmx,cmn,cmx);
+  Serial.print(F("GAS ADC/NORM: "));Serial.print(analogStable(PIN_GAS));Serial.print('/');
+  Serial.println(mapPedal(analogStable(PIN_GAS),gmn,gmx));
+  Serial.print(F("BRAKE ADC/NORM: "));Serial.print(analogStable(PIN_BRAKE));Serial.print('/');
+  Serial.println(mapPedal(analogStable(PIN_BRAKE),bmn,bmx));
+  Serial.print(F("CLUTCH ADC/NORM: "));Serial.print(analogStable(PIN_CLUTCH));Serial.print('/');
+  Serial.println(mapPedal(analogStable(PIN_CLUTCH),cmn,cmx));
   Serial.print(F("GEAR X: "));Serial.println(analogStable(PIN_GEAR_X));
   Serial.print(F("GEAR Y: "));Serial.println(analogStable(PIN_GEAR_Y));
   Serial.print(F("IGNITION: "));Serial.println(ignition.pressed()?F("ON"):F("OFF"));
-  Serial.print(F("HIGH GEAR: "));Serial.println(highGear.pressed()?F("ON"):F("OFF"));
+  Serial.print(F("HIGH GEAR BUTTON: "));Serial.println(highGear.pressed()?F("PRESSED"):F("RELEASED"));
+  Serial.print(F("HIGH GEAR HID LATCH: "));Serial.println(highGearLatched?F("ON"):F("OFF"));
+  Serial.print(F("IGNITION HID BUTTON: "));Serial.println(ignition.pressed()?F("ON"):F("OFF"));
   for(uint8_t i=0;i<6;++i){
     Serial.print(F("GEAR "));Serial.print(i+1);Serial.print(F(": "));
     Serial.println(activeGear==(int8_t)(i+1)?F("ON"):F("OFF"));
@@ -346,7 +404,8 @@ void setup(){
   delay(100);ignition.update();EEPROM.get(0,cal);
   if(!calValid()){
     cal.steeringExtreme=1200; // Резервный диапазон оси руля до калибровки.
-    if(ignition.pressed())setStage(FStage::ZERO);else fstage=FStage::ERROR;
+    if(ignition.pressed())setStage(FStage::ZERO);
+    else { fstage=FStage::ERROR; printStageInstructions(); }
   }else{
     // Holding Ignition at boot selects monitor mode after zero calibration.
     // The zero calibration itself is still performed first.
