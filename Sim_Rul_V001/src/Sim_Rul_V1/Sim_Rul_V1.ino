@@ -22,7 +22,7 @@ constexpr bool USE_SAVED_PEDAL_CALIBRATION=true;
 constexpr uint8_t PIN_GAS=A1, PIN_BRAKE=A2, PIN_CLUTCH=A3;
 constexpr uint8_t PIN_GEAR_X=A8, PIN_GEAR_Y=A9;
 constexpr uint8_t PIN_ENC_A=0, PIN_ENC_B=1;
-constexpr uint8_t PIN_IGNITION=5, PIN_CENTER_SW=6; // D7 свободен; пин повышенной передачи пока не назначен.
+constexpr uint8_t PIN_IGNITION=5, PIN_CENTER_SW=6, PIN_HIGH_GEAR=7;
 // ===== PARAMETERS =====
 constexpr uint16_t BUTTON_DEBOUNCE_MS=25;
 constexpr uint32_t ZERO_CAL_TIMEOUT_MS=15000UL;
@@ -57,7 +57,7 @@ void saveCal(){ cal.magic=EEPROM_MAGIC; cal.version=EEPROM_VERSION; cal.reserved
 
 // Expose only steering and pedal axes. Gearbox X/Y are internal sensors.
 Joystick_ Joystick(JOYSTICK_DEFAULT_REPORT_ID,JOYSTICK_TYPE_JOYSTICK,8,0,
-  true,true,true,true,false,false,false,false,false,false,false);
+  true,false,false,true,true,true,false,false,false,false,false);
 constexpr uint8_t HID_IGNITION=0, HID_HIGH_GEAR=1, HID_GEAR_BASE=2;
 
 volatile long encoderRaw=0;
@@ -83,7 +83,7 @@ struct DebouncedInput{
     if(millis()-changed>=BUTTON_DEBOUNCE_MS)stable=r;}
   bool pressed()const{return stable;}
 };
-DebouncedInput ignition,centerSwitch;
+DebouncedInput ignition,centerSwitch,highGear;
 
 
 uint16_t analogStable(uint8_t p){uint32_t s=0;for(uint8_t i=0;i<4;++i)s+=analogRead(p);return s/4;}
@@ -179,7 +179,7 @@ void blinkSaved(){
   Serial.println(F("CALIBRATION_SAVED"));
 }
 void firstCalibration(){
-  ignition.update();centerSwitch.update();
+  ignition.update();centerSwitch.update();highGear.update();
   if(fstage!=FStage::SAVE && millis()-fstarted>FIRST_CAL_TIMEOUT_MS){fstage=FStage::ERROR;return;}
 
   if(fstage==FStage::ZERO){
@@ -260,7 +260,7 @@ void printDiagnostics(bool force=false){
   Serial.print(F(" ENC_ZEROED=")); Serial.print(raw-centerOffset);
   Serial.print(F(" CENTER_SW=")); Serial.print(centerSwitch.pressed()?F("PRESSED"):F("OPEN"));
   Serial.print(F(" IGN=")); Serial.print(ignition.pressed()?1:0);
-  Serial.print(F(" HIGH_BTN=")); Serial.print(0);
+  Serial.print(F(" HIGH_BTN=")); Serial.print(highGear.pressed()?F("ON"):F("OFF"));
   Serial.print(F(" ADC_GAS=")); Serial.print(analogStable(PIN_GAS));
   Serial.print(F(" ADC_BRAKE=")); Serial.print(analogStable(PIN_BRAKE));
   Serial.print(F(" ADC_CLUTCH=")); Serial.print(analogStable(PIN_CLUTCH));
@@ -280,14 +280,19 @@ int8_t findGear(int x,int y){
   int8_t found=0;for(uint8_t i=0;i<6;++i)if(gearZone(i,x,y)){if(found)return 0;found=i+1;}return found;
 }
 void updateGear(int x,int y){
+  const int8_t previousGear=activeGear;
+  const bool highPressed=highGear.pressed();
   activeGear=findGear(x,y);
-  if(false&&activeGear)highGearLatched=true;
-  if(!activeGear&&!false)highGearLatched=false;
+  // Захват повышенной передачи только если кнопка нажата в выбранной передаче.
+  if(highPressed && activeGear!=0) highGearLatched=true;
+  // При выходе из передачи защёлка сбрасывается, если кнопка уже отпущена.
+  if(activeGear==0 && !highPressed) highGearLatched=false;
+  (void)previousGear;
 }
 
 // ===== HID / MONITOR =====
 void updateController(bool sendHid){
-  ignition.update();
+  ignition.update();highGear.update();
   uint16_t gr=analogStable(PIN_GAS),br=analogStable(PIN_BRAKE),cl=analogStable(PIN_CLUTCH);
   uint16_t xr=analogStable(PIN_GEAR_X),yr=analogStable(PIN_GEAR_Y);
   int gmn,gmx,bmn,bmx,cmn,cmx; pedalRanges(gmn,gmx,bmn,bmx,cmn,cmx);
@@ -298,13 +303,31 @@ void updateController(bool sendHid){
   long steer=readEncoder()-centerOffset,e=cal.steeringExtreme;
   steer=constrain(steer,-e,e);steer=map(steer,-e,e,STEERING_HID_MIN,STEERING_HID_MAX);
   Joystick.setButton(HID_IGNITION,ignition.pressed());
-  Joystick.setButton(HID_HIGH_GEAR,false); // Кнопка повышенной передачи временно отключена.
+  Joystick.setButton(HID_HIGH_GEAR,highGearLatched);
   for(uint8_t i=0;i<6;++i)Joystick.setButton(HID_GEAR_BASE+i,activeGear==(int8_t)(i+1));
-  // HID: X=руль, Y=газ, Rx=тормоз, Z=сцепление.
-  // Z назначена сцеплению; тормоз перенесён на Rx, чтобы оси не конфликтовали.
-  Joystick.setXAxis(steer);Joystick.setYAxis(gas);Joystick.setRxAxis(brake);Joystick.setZAxis(clutch);
+  // HID: X=руль, Rx=газ, Ry=тормоз, Rz=сцепление.
+  Joystick.setXAxis(steer);Joystick.setRxAxis(gas);Joystick.setRyAxis(brake);Joystick.setRzAxis(clutch);
   // gx/gy are used only by updateGear(); never publish gearbox axes to USB HID.
   if(sendHid)Joystick.sendState();
+}
+void printMonitor(){
+  static uint32_t last=0;
+  if(millis()-last<MONITOR_INTERVAL_MS)return;
+  last=millis();
+  Serial.println(F("\\n=== SIM_RUL MONITOR ==="));
+  Serial.print(F("STEERING: "));Serial.println(readEncoder()-centerOffset);
+  Serial.print(F("GAS: "));Serial.println(analogStable(PIN_GAS));
+  Serial.print(F("BRAKE: "));Serial.println(analogStable(PIN_BRAKE));
+  Serial.print(F("CLUTCH: "));Serial.println(analogStable(PIN_CLUTCH));
+  Serial.print(F("GEAR X: "));Serial.println(analogStable(PIN_GEAR_X));
+  Serial.print(F("GEAR Y: "));Serial.println(analogStable(PIN_GEAR_Y));
+  Serial.print(F("IGNITION: "));Serial.println(ignition.pressed()?F("ON"):F("OFF"));
+  Serial.print(F("HIGH GEAR: "));Serial.println(highGear.pressed()?F("ON"):F("OFF"));
+  for(uint8_t i=0;i<6;++i){
+    Serial.print(F("GEAR "));Serial.print(i+1);Serial.print(F(": "));
+    Serial.println(activeGear==(int8_t)(i+1)?F("ON"):F("OFF"));
+  }
+  Serial.println(F("HID OUTPUT: DISABLED (MONITOR MODE)"));
 }
 void monitor(){ printDiagnostics(); }
 
@@ -313,7 +336,7 @@ void setup(){
   Serial.begin(115200);
   pinMode(PIN_ENC_A,INPUT_PULLUP);pinMode(PIN_ENC_B,INPUT_PULLUP);
   encoderLastAB=(digitalRead(PIN_ENC_A)<<1)|digitalRead(PIN_ENC_B);
-  ignition.begin(PIN_IGNITION);centerSwitch.begin(PIN_CENTER_SW);
+  ignition.begin(PIN_IGNITION);centerSwitch.begin(PIN_CENTER_SW);highGear.begin(PIN_HIGH_GEAR);
   analogReference(DEFAULT);
   Joystick.setXAxisRange(STEERING_HID_MIN,STEERING_HID_MAX);Joystick.begin(false);
   attachInterrupt(digitalPinToInterrupt(PIN_ENC_A),encoderISR,CHANGE);
@@ -339,7 +362,7 @@ void loop(){
   static bool initialized=false,monitorMode=false;
   if(!initialized){
     initialized=true;
-    monitorMode=false; // Удержание зажигания не отключает HID.
+    monitorMode=ignition.pressed();
     Serial.println(monitorMode?F("[MODE] Serial monitor; HID output disabled."):F("[MODE] Normal HID mode."));
     if(!zeroCalibrate()){
       Serial.println(F("[WARN] Steering zero calibration failed. HID remains active; centerOffset=0."));
@@ -348,6 +371,7 @@ void loop(){
       Serial.println(F("[OK] Steering zero calibration complete."));
     }
   }
-  updateController(true);
+  updateController(!monitorMode);
+  if(monitorMode) printMonitor();
   printDiagnostics();
 }
