@@ -12,10 +12,10 @@
  *   Координаты КПП не передаются в игру как оси — вместо них
  *   отправляются отдельные кнопки передач 1–6.
  * • Кнопка «Зажигание» и кнопка повышенной передачи тоже являются HID-кнопками.
- * • При первом запуске выполняется калибровка руля и педалей.
+ * • Контроллер запускается сразу с настройками по умолчанию, без обязательной калибровки.
+ * • Если при включении удерживать «Зажигание», запускается калибровка.
  * • При обычном запуске определяется нулевое положение руля.
- * • Если при включении удерживать «Зажигание», запускается режим монитора:
- *   данные выводятся в Serial Monitor, но HID-состояние в игру не отправляется.
+ * • Режим монитора доступен через Serial Monitor во время обычной работы.
  *
  * ВАЖНО: распиновка и назначение выводов сохранены без изменений.
  */
@@ -413,6 +413,7 @@ long steeringPeak=0;
 uint16_t pedalPeakG=0,pedalPeakB=0,pedalPeakC=0;
 uint32_t saveHoldStarted=0;
 bool justSavedCalibration=false;
+bool calibrationMode=false;
 
 void printStageInstructions(){
   Serial.println();
@@ -832,16 +833,33 @@ void setup(){
   Joystick.begin(false);
   attachInterrupt(digitalPinToInterrupt(PIN_ENC_A),encoderISR,CHANGE);
   attachInterrupt(digitalPinToInterrupt(PIN_ENC_B),encoderISR,CHANGE);
-  delay(100);ignition.update();EEPROM.get(0,cal);
-  if(!calValid()){
-    cal.steeringExtreme=1200; // Временный диапазон руля, пока калибровка ещё не выполнена.
-    if(ignition.pressed())setStage(FStage::ZERO);
-    else { fstage=FStage::ERROR; printStageInstructions(); }
+  delay(100);
+  ignition.update();
+  EEPROM.get(0, cal);
+
+  // Если калибровки ещё нет, сразу задаём безопасные значения по умолчанию.
+  // Это позволяет пользоваться контроллером без прохождения калибровки.
+  if (!calValid()) {
+    cal.steeringExtreme = 1200;
+    cal.gasMin = GAS_MIN;
+    cal.gasMax = GAS_MAX;
+    cal.brakeMin = BRAKE_MIN;
+    cal.brakeMax = BRAKE_MAX;
+    cal.clutchMin = CLUTCH_MIN;
+    cal.clutchMax = CLUTCH_MAX;
+    saveCal();
+    Serial.println(F("[CAL] Сохранены настройки по умолчанию. Калибровка не обязательна."));
+  }
+
+  // Удержание «Зажигания» при включении — добровольный запуск калибровки.
+  if (ignition.pressed()) {
+    calibrationMode = true;
+    setStage(FStage::ZERO);
+    Serial.println(F("[CAL] Запущена ручная калибровка по запросу пользователя."));
   } else {
-    // Если «Зажигание» удерживается при запуске, включается режим монитора.
-    // Поиск нулевого положения руля всё равно выполняется первым.
+    calibrationMode = false;
     fstage = FStage::DONE;
-    Serial.println(F("[USB HID] Игровой контроллер зарегистрирован. Оси: руль, газ, тормоз, сцепление; кнопки: зажигание, повышенная передача, 1–6."));
+    Serial.println(F("[USB HID] Контроллер готов без калибровки. Для калибровки удерживай «Зажигание» при включении."));
   }
 }
 void loop() {
@@ -855,12 +873,13 @@ void loop() {
     return;
   }
 
-  // Пока калибровка недействительна, выполняем её шаги или ждём повторного запуска.
-  if (!calValid()) {
+  // Калибровка запускается только по желанию: удерживай «Зажигание» при включении.
+  // Если её не запускали, контроллер сразу работает с настройками по умолчанию
+  // или с ранее сохранёнными значениями.
+  if (calibrationMode) {
     if (fstage != FStage::ERROR && fstage != FStage::DONE) {
       firstCalibration();
     } else if (fstage == FStage::ERROR) {
-      cal.steeringExtreme = 1200;
       updateController(false);
       delay(50);
     }
@@ -870,32 +889,18 @@ void loop() {
   }
 
   static bool initialized = false;
-  static bool monitorMode = false;
 
-  // Выполняется один раз после загрузки сохранённой калибровки.
+  // При обычном запуске не ждём калибровку: только пытаемся найти ноль руля.
   if (!initialized) {
     initialized = true;
-    monitorMode = ignition.pressed();
-
-    if (monitorMode) {
-      Serial.println(F("[MODE] Режим монитора: HID отключён."));
-    } else {
-      Serial.println(F("[MODE] Обычный режим: HID включён."));
-    }
-
     if (!zeroCalibrate()) {
-      Serial.println(F("[WARN] Не удалось найти ноль руля. Используется смещение 0."));
+      Serial.println(F("[WARN] Ноль руля автоматически не найден. Используется смещение 0; контроллер продолжает работу."));
       centerOffset = 0;
     } else {
       Serial.println(F("[OK] Нулевое положение руля найдено."));
     }
   }
 
-  updateController(!monitorMode);
-
-  if (monitorMode) {
-    printMonitor();
-  }
-
+  updateController(true);
   printDiagnostics();
 }
