@@ -138,56 +138,183 @@ Joystick_ Joystick(JOYSTICK_DEFAULT_REPORT_ID,JOYSTICK_TYPE_JOYSTICK,8,0,
   true,false,false,true,true,true,false,false,false,false,false);
 constexpr uint8_t HID_IGNITION=0, HID_HIGH_GEAR=1, HID_GEAR_BASE=2;
 
-volatile long encoderRaw=0;
-volatile uint8_t encoderLastAB=0;
-long centerOffset=0;
+// Текущее значение энкодера. Переменные меняются также из прерывания.
+volatile long encoderRaw = 0;
+volatile uint8_t encoderLastAB = 0;
 
-void encoderISR(){
-  uint8_t ab=(digitalRead(PIN_ENC_A)<<1)|digitalRead(PIN_ENC_B);
-  uint8_t t=(encoderLastAB<<2)|ab;
-  switch(t){
-    case 1: case 7: case 14: case 8: ++encoderRaw; break;
-    case 2: case 11: case 13: case 4: --encoderRaw; break;
+// Смещение, которое соответствует найденному нулю руля.
+long centerOffset = 0;
+
+// Обработчик прерывания энкодера: определяет направление вращения.
+void encoderISR() {
+  uint8_t ab = (digitalRead(PIN_ENC_A) << 1) | digitalRead(PIN_ENC_B);
+  uint8_t transition = (encoderLastAB << 2) | ab;
+
+  switch (transition) {
+    case 1:
+    case 7:
+    case 14:
+    case 8:
+      ++encoderRaw;
+      break;
+
+    case 2:
+    case 11:
+    case 13:
+    case 4:
+      --encoderRaw;
+      break;
   }
-  encoderLastAB=ab;
+
+  encoderLastAB = ab;
 }
-long readEncoder(){ noInterrupts(); long v=encoderRaw; interrupts(); return v; }
-void resetEncoder(){ noInterrupts(); encoderRaw=0; interrupts(); }
 
-struct DebouncedInput{
-  uint8_t pin; bool stable=false,lastRaw=false; uint32_t changed=0;
-  void begin(uint8_t p){pin=p;pinMode(pin,INPUT_PULLUP);stable=lastRaw=(digitalRead(pin)==LOW);changed=millis();}
-  void update(){bool r=digitalRead(pin)==LOW;if(r!=lastRaw){lastRaw=r;changed=millis();}
-    if(millis()-changed>=BUTTON_DEBOUNCE_MS)stable=r;}
-  bool pressed()const{return stable;}
+long readEncoder() {
+  noInterrupts();
+  long value = encoderRaw;
+  interrupts();
+  return value;
+}
+
+void resetEncoder() {
+  noInterrupts();
+  encoderRaw = 0;
+  interrupts();
+}
+
+// Кнопка с программным подавлением дребезга контактов.
+struct DebouncedInput {
+  uint8_t pin;
+  bool stable = false;
+  bool lastRaw = false;
+  uint32_t changed = 0;
+
+  void begin(uint8_t inputPin) {
+    pin = inputPin;
+    pinMode(pin, INPUT_PULLUP);
+    stable = lastRaw = (digitalRead(pin) == LOW);
+    changed = millis();
+  }
+
+  void update() {
+    bool rawPressed = (digitalRead(pin) == LOW);
+
+    if (rawPressed != lastRaw) {
+      lastRaw = rawPressed;
+      changed = millis();
+    }
+
+    if (millis() - changed >= BUTTON_DEBOUNCE_MS) {
+      stable = rawPressed;
+    }
+  }
+
+  bool pressed() const {
+    return stable;
+  }
 };
-DebouncedInput ignition,centerSwitch,highGear;
 
+DebouncedInput ignition;
+DebouncedInput centerSwitch;
+DebouncedInput highGear;
 
-uint16_t analogStable(uint8_t p){uint32_t s=0;for(uint8_t i=0;i<4;++i)s+=analogRead(p);return s/4;}
-int mapAxis(uint16_t v,int mn,int mx){if(mx<=mn)return 0;v=constrain((int)v,mn,mx);return map(v,mn,mx,0,1023);}
+// Читает аналоговый вход несколько раз и усредняет показания.
+uint16_t analogStable(uint8_t pin) {
+  uint32_t sum = 0;
+
+  for (uint8_t i = 0; i < 4; ++i) {
+    sum += analogRead(pin);
+  }
+
+  return sum / 4;
+}
+
+// Переводит значение датчика в диапазон 0–1023.
+int mapAxis(uint16_t value, int minimum, int maximum) {
+  if (maximum <= minimum) {
+    return 0;
+  }
+
+  value = constrain((int)value, minimum, maximum);
+  return map(value, minimum, maximum, 0, 1023);
+}
+
 // Педаль калибруется по двум физическим крайним положениям; поддерживается
 // и обратное направление потенциометра (ADC может уменьшаться при нажатии).
-int mapPedal(uint16_t raw,uint16_t rest,uint16_t full){
-  if(rest==full)return 0;
-  int lo=min((int)rest,(int)full), hi=max((int)rest,(int)full);
-  int v=constrain((int)raw,lo,hi);
-  return constrain((int)map(v,(int)rest,(int)full,0,1023),0,1023);
+// Переводит показание педали в диапазон 0–1023.
+// Поддерживает потенциометр, у которого значение АЦП уменьшается при нажатии.
+int mapPedal(uint16_t raw, uint16_t rest, uint16_t full) {
+  if (rest == full) {
+    return 0;
+  }
+
+  int low = min((int)rest, (int)full);
+  int high = max((int)rest, (int)full);
+  int value = constrain((int)raw, low, high);
+  int normalized = map(value, (int)rest, (int)full, 0, 1023);
+
+  return constrain(normalized, 0, 1023);
 }
-void pedalRanges(int &gmn,int &gmx,int &bmn,int &bmx,int &cmn,int &cmx){
-  if(USE_SAVED_PEDAL_CALIBRATION && calValid()){gmn=cal.gasMin;gmx=cal.gasMax;bmn=cal.brakeMin;bmx=cal.brakeMax;cmn=cal.clutchMin;cmx=cal.clutchMax;}
-  else {gmn=GAS_MIN;gmx=GAS_MAX;bmn=BRAKE_MIN;bmx=BRAKE_MAX;cmn=CLUTCH_MIN;cmx=CLUTCH_MAX;}
+
+// Возвращает сохранённые пределы педалей, если калибровка действительна.
+// Если калибровки нет, используются значения по умолчанию из настроек.
+void pedalRanges(
+  int &gasMin, int &gasMax,
+  int &brakeMin, int &brakeMax,
+  int &clutchMin, int &clutchMax
+) {
+  if (USE_SAVED_PEDAL_CALIBRATION && calValid()) {
+    gasMin = cal.gasMin;
+    gasMax = cal.gasMax;
+    brakeMin = cal.brakeMin;
+    brakeMax = cal.brakeMax;
+    clutchMin = cal.clutchMin;
+    clutchMax = cal.clutchMax;
+  } else {
+    gasMin = GAS_MIN;
+    gasMax = GAS_MAX;
+    brakeMin = BRAKE_MIN;
+    brakeMax = BRAKE_MAX;
+    clutchMin = CLUTCH_MIN;
+    clutchMax = CLUTCH_MAX;
+  }
 }
 
 // ════════════════════════════════════════════════════════════════════
 // 4. ОБРАБОТКА НАЖАТИЯ КНОПКИ «ЗАЖИГАНИЕ»
+
 // ════════════════════════════════════════════════════════════════════
-bool ignPrev=false,ignArmed=false;
-void armIgn(){ignPrev=ignition.pressed();ignArmed=!ignPrev;}
-bool ignEdge(){
-  bool now=ignition.pressed(); if(!now)ignArmed=true;
-  bool e=now&&!ignPrev&&ignArmed; if(e)ignArmed=false; ignPrev=now; return e;
+// 4. ОБРАБОТКА НАЖАТИЯ КНОПКИ «ЗАЖИГАНИЕ»
+// ════════════════════════════════════════════════════════════════════
+bool ignPrev = false;
+bool ignArmed = false;
+
+// Готовит кнопку к регистрации следующего нажатия.
+void armIgn() {
+  ignPrev = ignition.pressed();
+  ignArmed = !ignPrev;
 }
+
+// Возвращает true только один раз в момент нового нажатия.
+bool ignEdge() {
+  bool nowPressed = ignition.pressed();
+
+  if (!nowPressed) {
+    ignArmed = true;
+  }
+
+  bool newPress = nowPressed && !ignPrev && ignArmed;
+
+  if (newPress) {
+    ignArmed = false;
+  }
+
+  ignPrev = nowPressed;
+  return newPress;
+}
+
+// ════════════════════════════════════════════════════════════════════
+// 5. ПОИСК НУЛЕВОГО ПОЛОЖЕНИЯ РУЛЯ
 
 // ════════════════════════════════════════════════════════════════════
 // 5. ПОИСК НУЛЕВОГО ПОЛОЖЕНИЯ РУЛЯ
@@ -392,31 +519,75 @@ void printDiagnostics(bool force=false){
   Serial.print(F(" STEER_LIMIT=")); Serial.print(cal.steeringExtreme);
   Serial.print(F(" HID=")); Serial.println(calValid()?F("READY"):F("CALIBRATION"));
 }
-bool gearZone(uint8_t i,int x,int y){
-  // Передача активна только внутри своего прямоугольника X/Y.
-  switch(i){
-    case 0: return x>=GEAR_1_X_MIN&&x<=GEAR_1_X_MAX&&y>=GEAR_1_Y_MIN&&y<=GEAR_1_Y_MAX;
-    case 1: return x>=GEAR_2_X_MIN&&x<=GEAR_2_X_MAX&&y>=GEAR_2_Y_MIN&&y<=GEAR_2_Y_MAX;
-    case 2: return x>=GEAR_3_X_MIN&&x<=GEAR_3_X_MAX&&y>=GEAR_3_Y_MIN&&y<=GEAR_3_Y_MAX;
-    case 3: return x>=GEAR_4_X_MIN&&x<=GEAR_4_X_MAX&&y>=GEAR_4_Y_MIN&&y<=GEAR_4_Y_MAX;
-    case 4: return x>=GEAR_5_X_MIN&&x<=GEAR_5_X_MAX&&y>=GEAR_5_Y_MIN&&y<=GEAR_5_Y_MAX;
-    case 5: return x>=GEAR_6_X_MIN&&x<=GEAR_6_X_MAX&&y>=GEAR_6_Y_MIN&&y<=GEAR_6_Y_MAX;
-    default: return false;
+// Проверяет, попали ли координаты X/Y внутрь прямоугольника передачи.
+bool gearZone(uint8_t gearIndex, int x, int y) {
+  switch (gearIndex) {
+    case 0:
+      return x >= GEAR_1_X_MIN && x <= GEAR_1_X_MAX &&
+             y >= GEAR_1_Y_MIN && y <= GEAR_1_Y_MAX;
+
+    case 1:
+      return x >= GEAR_2_X_MIN && x <= GEAR_2_X_MAX &&
+             y >= GEAR_2_Y_MIN && y <= GEAR_2_Y_MAX;
+
+    case 2:
+      return x >= GEAR_3_X_MIN && x <= GEAR_3_X_MAX &&
+             y >= GEAR_3_Y_MIN && y <= GEAR_3_Y_MAX;
+
+    case 3:
+      return x >= GEAR_4_X_MIN && x <= GEAR_4_X_MAX &&
+             y >= GEAR_4_Y_MIN && y <= GEAR_4_Y_MAX;
+
+    case 4:
+      return x >= GEAR_5_X_MIN && x <= GEAR_5_X_MAX &&
+             y >= GEAR_5_Y_MIN && y <= GEAR_5_Y_MAX;
+
+    case 5:
+      return x >= GEAR_6_X_MIN && x <= GEAR_6_X_MAX &&
+             y >= GEAR_6_Y_MIN && y <= GEAR_6_Y_MAX;
+
+    default:
+      return false;
   }
 }
-int8_t findGear(int x,int y){
-  int8_t found=0;for(uint8_t i=0;i<6;++i)if(gearZone(i,x,y)){if(found)return 0;found=i+1;}return found;
+
+// Определяет номер передачи по координатам КПП.
+// 0 означает нейтраль. Если зоны передач пересекаются, также возвращается 0.
+int8_t findGear(int x, int y) {
+  int8_t foundGear = 0;
+
+  for (uint8_t i = 0; i < 6; ++i) {
+    if (gearZone(i, x, y)) {
+      if (foundGear != 0) {
+        return 0;
+      }
+
+      foundGear = i + 1;
+    }
+  }
+
+  return foundGear;
 }
-void updateGear(int x,int y){
-  const int8_t previousGear=activeGear;
-  const bool highPressed=highGear.pressed();
-  activeGear=findGear(x,y);
-  // Нажатие кнопки повышенной передачи фиксируется, если выбрана одна из передач.
-  if(highPressed && activeGear!=0) highGearLatched=true;
-  // При переходе в нейтраль защёлка сбрасывается, если кнопка уже отпущена.
-  if(activeGear==0 && !highPressed) highGearLatched=false;
-  (void)previousGear;
+
+// Обновляет выбранную передачу и состояние повышенной передачи.
+void updateGear(int x, int y) {
+  const bool highButtonPressed = highGear.pressed();
+
+  activeGear = findGear(x, y);
+
+  // Нажатие фиксируется, если рычаг находится в одной из передач.
+  if (highButtonPressed && activeGear != 0) {
+    highGearLatched = true;
+  }
+
+  // В нейтрали повышенная передача выключается после отпускания кнопки.
+  if (activeGear == 0 && !highButtonPressed) {
+    highGearLatched = false;
+  }
 }
+
+// ════════════════════════════════════════════════════════════════════
+// 9. ОТПРАВКА ДАННЫХ В ИГРУ И РЕЖИМ МОНИТОРА
 
 // ════════════════════════════════════════════════════════════════════
 // 9. ОТПРАВКА ДАННЫХ В ИГРУ И РЕЖИМ МОНИТОРА
