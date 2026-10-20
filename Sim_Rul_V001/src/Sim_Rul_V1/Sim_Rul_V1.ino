@@ -1,7 +1,8 @@
 /* Sim_Rul V1.0 — Arduino Pro Micro 5V/16MHz
  * Gearbox X/Y are processed internally and are NOT exposed as HID axes.
  * No button matrix. Ignition + High Gear + 6 virtual gears = 8 HID buttons.
- * First start: full calibration with Ignition held at power-up.
+ * First start: steering/pedal calibration with Ignition held at power-up.
+ * Gearbox uses fixed normalized X/Y targets; no per-gear calibration is needed.
  * Later starts: steering zero calibration only; center switch is then ignored.
  * Hold Ignition at boot to select monitor mode; monitor mode never sends HID state.
  */
@@ -200,14 +201,14 @@ void firstCalibration(){
   if(fstage==FStage::PEDAL_MAX){
     uint16_t g=analogStable(PIN_GAS),b=analogStable(PIN_BRAKE),c=analogStable(PIN_CLUTCH);
     if(g>pedalPeakG)pedalPeakG=g;if(b>pedalPeakB)pedalPeakB=b;if(c>pedalPeakC)pedalPeakC=c;
-    if(ignEdge()){cal.gasMax=pedalPeakG;cal.brakeMax=pedalPeakB;cal.clutchMax=pedalPeakC;setStage(FStage::G1);}
+    if(ignEdge()){cal.gasMax=pedalPeakG;cal.brakeMax=pedalPeakB;cal.clutchMax=pedalPeakC;setStage(FStage::SAVE);}
     return;
   }
   uint8_t gn=gearStage();
   if(gn){
+    // Legacy stage retained for EEPROM layout compatibility; fixed gear targets
+    // are defined above and are not learned during calibration.
     if(ignEdge()){
-      cal.gear[gn-1].x=mapAxis(analogStable(PIN_GEAR_X),GEAR_X_MIN,GEAR_X_MAX);
-      cal.gear[gn-1].y=mapAxis(analogStable(PIN_GEAR_Y),GEAR_Y_MIN,GEAR_Y_MAX);
       setStage(gn<6?(FStage)((uint8_t)FStage::G1+gn):FStage::SAVE);
     }
     return;
@@ -272,13 +273,37 @@ void printDiagnostics(bool force=false){
   Serial.print(F(" STEER_LIMIT=")); Serial.print(cal.steeringExtreme);
   Serial.print(F(" HID=")); Serial.println(calValid()?F("READY"):F("CALIBRATION"));
 }
+// ===== FIXED 6-SPEED H-PATTERN GEARBOX =====
+// X columns: left=0, middle=512, right=1023.
+// Y rows: first/forward=0, second/back=1023.
+// If the physical shifter's direction is reversed, swap the corresponding values.
+constexpr int GEAR_X_LEFT=0;
+constexpr int GEAR_X_MIDDLE=512;
+constexpr int GEAR_X_RIGHT=1023;
+constexpr int GEAR_Y_FORWARD=0;
+constexpr int GEAR_Y_BACK=1023;
+constexpr int GEAR_TOLERANCE=GEAR_CALIBRATION_MARGIN;
+
+const int16_t GEAR_X_TARGETS[6]={
+  GEAR_X_LEFT, GEAR_X_LEFT,
+  GEAR_X_MIDDLE, GEAR_X_MIDDLE,
+  GEAR_X_RIGHT, GEAR_X_RIGHT
+};
+const int16_t GEAR_Y_TARGETS[6]={
+  GEAR_Y_FORWARD, GEAR_Y_BACK,
+  GEAR_Y_FORWARD, GEAR_Y_BACK,
+  GEAR_Y_FORWARD, GEAR_Y_BACK
+};
+
 bool gearZone(uint8_t i,int x,int y){
-  int gx=cal.gear[i].x,gy=cal.gear[i].y;
-  return x>=gx-GEAR_CALIBRATION_MARGIN&&x<=gx+GEAR_CALIBRATION_MARGIN&&
-         y>=gy-GEAR_CALIBRATION_MARGIN&&y<=gy+GEAR_CALIBRATION_MARGIN;
+  return abs(x-GEAR_X_TARGETS[i])<=GEAR_TOLERANCE &&
+         abs(y-GEAR_Y_TARGETS[i])<=GEAR_TOLERANCE;
 }
 int8_t findGear(int x,int y){
-  int8_t found=0;for(uint8_t i=0;i<6;++i)if(gearZone(i,x,y)){if(found)return 0;found=i+1;}return found;
+  for(uint8_t i=0;i<6;++i){
+    if(gearZone(i,x,y)) return (int8_t)(i+1);
+  }
+  return 0; // Neutral or between gear positions.
 }
 void updateGear(int x,int y){
   int8_t previousGear=activeGear;
@@ -337,8 +362,8 @@ void printMonitor(){
   for(uint8_t i=0;i<6;++i){
     Serial.print(F("GEAR "));Serial.print(i+1);
     Serial.print(F(": "));Serial.print(activeGear==(int8_t)(i+1)?F("ON"):F("OFF"));
-    Serial.print(F(" [TARGET X="));Serial.print(cal.gear[i].x);
-    Serial.print(F(" Y="));Serial.print(cal.gear[i].y);Serial.println(F("]"));
+    Serial.print(F(" [TARGET X="));Serial.print(GEAR_X_TARGETS[i]);
+    Serial.print(F(" Y="));Serial.print(GEAR_Y_TARGETS[i]);Serial.println(F("]"));
   }
   Serial.println(F("HID OUTPUT: DISABLED (MONITOR MODE)"));
 }
