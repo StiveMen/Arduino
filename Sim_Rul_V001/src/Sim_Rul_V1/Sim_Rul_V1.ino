@@ -31,7 +31,7 @@ constexpr uint32_t MONITOR_INTERVAL_MS=250;
 constexpr long MAX_ENCODER_TRAVEL=200000L;
 constexpr int32_t STEERING_HID_MIN=-32767L, STEERING_HID_MAX=32767L;
 constexpr uint16_t EEPROM_MAGIC=0x5347;
-constexpr uint8_t EEPROM_VERSION=2;
+constexpr uint8_t EEPROM_VERSION=3; // Перекалибровка после изменения координат КПП.
 
 struct GearCal { int16_t x,y; };
 struct CalData {
@@ -205,8 +205,13 @@ void firstCalibration(){
   uint8_t gn=gearStage();
   if(gn){
     if(ignEdge()){
-      cal.gear[gn-1].x=mapAxis(analogStable(PIN_GEAR_X),GEAR_X_MIN,GEAR_X_MAX);
-      cal.gear[gn-1].y=mapAxis(analogStable(PIN_GEAR_Y),GEAR_Y_MIN,GEAR_Y_MAX);
+      // Первые две передачи заданы фиксированными координатами пользователя.
+      if(gn==1){cal.gear[0].x=100;cal.gear[0].y=1000;}
+      else if(gn==2){cal.gear[1].x=100;cal.gear[1].y=0;}
+      else {
+        cal.gear[gn-1].x=mapAxis(analogStable(PIN_GEAR_X),GEAR_X_MIN,GEAR_X_MAX);
+        cal.gear[gn-1].y=mapAxis(analogStable(PIN_GEAR_Y),GEAR_Y_MIN,GEAR_Y_MAX);
+      }
       setStage(gn<6?(FStage)((uint8_t)FStage::G1+gn):FStage::SAVE);
     }
     return;
@@ -272,7 +277,10 @@ void printDiagnostics(bool force=false){
   Serial.print(F(" HID=")); Serial.println(calValid()?F("READY"):F("CALIBRATION"));
 }
 bool gearZone(uint8_t i,int x,int y){
+  // Координаты КПП: 1-я (100,1000), 2-я (100,0); 3–6-я берутся из калибровки.
   int gx=cal.gear[i].x,gy=cal.gear[i].y;
+  if(i==0){gx=100;gy=1000;}
+  else if(i==1){gx=100;gy=0;}
   return x>=gx-GEAR_CALIBRATION_MARGIN&&x<=gx+GEAR_CALIBRATION_MARGIN&&
          y>=gy-GEAR_CALIBRATION_MARGIN&&y<=gy+GEAR_CALIBRATION_MARGIN;
 }
