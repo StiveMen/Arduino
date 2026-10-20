@@ -173,6 +173,7 @@ uint32_t fstarted=0;
 long steeringPeak=0;
 uint16_t pedalPeakG=0,pedalPeakB=0,pedalPeakC=0;
 uint32_t saveHoldStarted=0;
+bool justSavedCalibration=false;
 
 void printStageInstructions(){
   Serial.println();
@@ -181,7 +182,7 @@ void printStageInstructions(){
       Serial.println(F("[CAL 1/4] НОЛЬ РУЛЯ: поверни руль ВПРАВО, затем медленно ВЛЕВО до срабатывания концевика; продолжай влево до отпускания концевика, затем поверни вправо для проверки."));
       break;
     case FStage::STEERING_EXTREME:
-      Serial.println(F("[CAL 2/4] РУЛЬ: поверни руль до крайнего положения (полный ход), затем нажми кнопку ЗАЖИГАНИЕ для сохранения диапазона."));
+      Serial.println(F("[CAL 2/4] РУЛЬ: верни руль к найденному нулю, затем поверни до крайнего положения (полный ход) и нажми ЗАЖИГАНИЕ для сохранения диапазона."));
       break;
     case FStage::PEDAL_MIN:
       Serial.println(F("[CAL 3/4] ПЕДАЛИ: отпусти газ, тормоз и сцепление; нажми ЗАЖИГАНИЕ, чтобы записать их исходные положения."));
@@ -224,16 +225,16 @@ void blinkSaved(){
 }
 void firstCalibration(){
   ignition.update();centerSwitch.update();highGear.update();
-  if(fstage!=FStage::SAVE && millis()-fstarted>FIRST_CAL_TIMEOUT_MS){fstage=FStage::ERROR;return;}
+  if(fstage!=FStage::SAVE && millis()-fstarted>FIRST_CAL_TIMEOUT_MS){setStage(FStage::ERROR);return;}
 
   if(fstage==FStage::ZERO){
     if(zeroCalibrate()){setStage(FStage::STEERING_EXTREME);}
-    else fstage=FStage::ERROR;
+    else setStage(FStage::ERROR);
     return;
   }
   if(fstage==FStage::STEERING_EXTREME){
     long p=labs(readEncoder()-centerOffset);if(p>steeringPeak)steeringPeak=p;
-    if(ignEdge()){if(steeringPeak<10){fstage=FStage::ERROR;return;}cal.steeringExtreme=steeringPeak;setStage(FStage::PEDAL_MIN);}
+    if(ignEdge()){if(steeringPeak<10){setStage(FStage::ERROR);return;}cal.steeringExtreme=steeringPeak;setStage(FStage::PEDAL_MIN);}
     return;
   }
   if(fstage==FStage::PEDAL_MIN){
@@ -274,6 +275,7 @@ void firstCalibration(){
       // Keep the calibration result in EEPROM and require a clean reboot.
       // The user can release Ignition and power-cycle/reset the controller.
       fstage=FStage::DONE;
+      justSavedCalibration=true;
     }
     }else saveHoldStarted=0;
   }
@@ -414,6 +416,11 @@ void setup(){
 }
 void loop(){
   ignition.update();  centerSwitch.update();
+  if(justSavedCalibration){
+    Serial.println(F("[RESTART REQUIRED] Калибровка сохранена. Перезапусти контроллер; до перезапуска HID не активируется."));
+    delay(1000);
+    return;
+  }
   if(!calValid()){
     if(fstage!=FStage::ERROR&&fstage!=FStage::DONE) firstCalibration();
     else if(fstage==FStage::ERROR) { cal.steeringExtreme=1200; updateController(false); delay(50); }
