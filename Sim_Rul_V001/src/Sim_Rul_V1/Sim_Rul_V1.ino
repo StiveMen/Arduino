@@ -15,7 +15,14 @@ constexpr int BRAKE_MIN=0, BRAKE_MAX=1023;
 constexpr int CLUTCH_MIN=0, CLUTCH_MAX=1023;
 constexpr int GEAR_X_MIN=0, GEAR_X_MAX=1023;
 constexpr int GEAR_Y_MIN=0, GEAR_Y_MAX=1023;
-constexpr int GEAR_CALIBRATION_MARGIN=15;
+// Прямоугольные зоны передач в координатах 0..1023 после нормализации датчиков.
+// Значения для передач 2–6 — стартовые примеры: обязательно настрой их под свою КПП.
+constexpr int GEAR_1_X_MIN=100, GEAR_1_X_MAX=200, GEAR_1_Y_MIN=100, GEAR_1_Y_MAX=200;
+constexpr int GEAR_2_X_MIN=100, GEAR_2_X_MAX=200, GEAR_2_Y_MIN=300, GEAR_2_Y_MAX=400;
+constexpr int GEAR_3_X_MIN=100, GEAR_3_X_MAX=200, GEAR_3_Y_MIN=500, GEAR_3_Y_MAX=600;
+constexpr int GEAR_4_X_MIN=300, GEAR_4_X_MAX=400, GEAR_4_Y_MIN=100, GEAR_4_Y_MAX=200;
+constexpr int GEAR_5_X_MIN=300, GEAR_5_X_MAX=400, GEAR_5_Y_MIN=300, GEAR_5_Y_MAX=400;
+constexpr int GEAR_6_X_MIN=300, GEAR_6_X_MAX=400, GEAR_6_Y_MIN=500, GEAR_6_Y_MAX=600;
 constexpr bool USE_SAVED_PEDAL_CALIBRATION=true;
 
 // ===== PINS =====
@@ -31,9 +38,9 @@ constexpr uint32_t MONITOR_INTERVAL_MS=250;
 constexpr long MAX_ENCODER_TRAVEL=200000L;
 constexpr int32_t STEERING_HID_MIN=-32767L, STEERING_HID_MAX=32767L;
 constexpr uint16_t EEPROM_MAGIC=0x5347;
-constexpr uint8_t EEPROM_VERSION=4; // Новая калибровка всех шести передач.
+constexpr uint8_t EEPROM_VERSION=5; // Зоны передач задаются константами в коде.
 
-struct GearCal { int16_t x,y; };
+struct GearCal { int16_t x,y; }; // Поля оставлены для совместимости структуры, зоны передач ими не задаются.
 struct CalData {
   uint16_t magic; uint8_t version; uint8_t reserved;
   int32_t steeringExtreme;
@@ -167,7 +174,7 @@ bool zeroCalibrate(){
 }
 
 // ===== FIRST CALIBRATION =====
-enum FStage:uint8_t{ZERO,STEERING_EXTREME,PEDAL_MIN,PEDAL_MAX,G1,G2,G3,G4,G5,G6,SAVE,ERROR,DONE};
+enum FStage:uint8_t{ZERO,STEERING_EXTREME,PEDAL_MIN,PEDAL_MAX,SAVE,ERROR,DONE};
 FStage fstage=FStage::ZERO;
 uint32_t fstarted=0;
 long steeringPeak=0;
@@ -190,12 +197,6 @@ void printStageInstructions(){
     case FStage::PEDAL_MAX:
       Serial.println(F("[CAL 3/4] ПЕДАЛИ: нажми каждую педаль до упора, затем отпусти. После этого нажми ЗАЖИГАНИЕ для сохранения полного диапазона."));
       break;
-    case FStage::G1: case FStage::G2: case FStage::G3:
-    case FStage::G4: case FStage::G5: case FStage::G6:
-      Serial.print(F("[CAL 4/4] Установи КПП в передачу "));
-      Serial.print((uint8_t)fstage-(uint8_t)FStage::G1+1);
-      Serial.println(F(" и нажми ЗАЖИГАНИЕ для записи координат X/Y."));
-      break;
     case FStage::SAVE:
       Serial.println(F("[SAVE] Переведи КПП в НЕЙТРАЛЬ и удерживай ЗАЖИГАНИЕ 1,2 секунды. Калибровка сохранится в EEPROM."));
       break;
@@ -213,10 +214,6 @@ void setStage(uint8_t s){
     pedalPeakG=cal.gasMin; pedalPeakB=cal.brakeMin; pedalPeakC=cal.clutchMin;
   }
   printStageInstructions();
-}
-uint8_t gearStage(){
-  switch(fstage){case FStage::G1:return 1;case FStage::G2:return 2;case FStage::G3:return 3;
-    case FStage::G4:return 4;case FStage::G5:return 5;case FStage::G6:return 6;default:return 0;}
 }
 void blinkSaved(){
   // D17 is occupied by the center switch, so no onboard LED is used as a
@@ -251,17 +248,7 @@ void firstCalibration(){
     if(ignEdge()){
       cal.gasMax=pedalPeakG; cal.brakeMax=pedalPeakB; cal.clutchMax=pedalPeakC;
       if(cal.gasMax==cal.gasMin||cal.brakeMax==cal.brakeMin||cal.clutchMax==cal.clutchMin){setStage(FStage::ERROR);return;}
-      setStage(FStage::G1);
-    }
-    return;
-  }
-  uint8_t gn=gearStage();
-  if(gn){
-    if(ignEdge()){
-      // Записываем реальные координаты каждой передачи, включая 1-ю и 2-ю.
-      cal.gear[gn-1].x=mapAxis(analogStable(PIN_GEAR_X),GEAR_X_MIN,GEAR_X_MAX);
-      cal.gear[gn-1].y=mapAxis(analogStable(PIN_GEAR_Y),GEAR_Y_MIN,GEAR_Y_MAX);
-      setStage(gn<6?(FStage)((uint8_t)FStage::G1+gn):FStage::SAVE);
+      setStage(FStage::SAVE);
     }
     return;
   }
@@ -291,12 +278,6 @@ const __FlashStringHelper* stageName(){
     case FStage::STEERING_EXTREME: return F("STEERING_EXTREME");
     case FStage::PEDAL_MIN: return F("PEDAL_MIN");
     case FStage::PEDAL_MAX: return F("PEDAL_MAX");
-    case FStage::G1: return F("GEAR_1");
-    case FStage::G2: return F("GEAR_2");
-    case FStage::G3: return F("GEAR_3");
-    case FStage::G4: return F("GEAR_4");
-    case FStage::G5: return F("GEAR_5");
-    case FStage::G6: return F("GEAR_6");
     case FStage::SAVE: return F("SAVE");
     case FStage::ERROR: return F("ERROR");
     case FStage::DONE: return F("DONE");
@@ -327,10 +308,16 @@ void printDiagnostics(bool force=false){
   Serial.print(F(" HID=")); Serial.println(calValid()?F("READY"):F("CALIBRATION"));
 }
 bool gearZone(uint8_t i,int x,int y){
-  // Все шесть координат задаются пользователем во время калибровки.
-  const int gx=cal.gear[i].x,gy=cal.gear[i].y;
-  return x>=gx-GEAR_CALIBRATION_MARGIN&&x<=gx+GEAR_CALIBRATION_MARGIN&&
-         y>=gy-GEAR_CALIBRATION_MARGIN&&y<=gy+GEAR_CALIBRATION_MARGIN;
+  // Передача активна только внутри своего прямоугольника X/Y.
+  switch(i){
+    case 0: return x>=GEAR_1_X_MIN&&x<=GEAR_1_X_MAX&&y>=GEAR_1_Y_MIN&&y<=GEAR_1_Y_MAX;
+    case 1: return x>=GEAR_2_X_MIN&&x<=GEAR_2_X_MAX&&y>=GEAR_2_Y_MIN&&y<=GEAR_2_Y_MAX;
+    case 2: return x>=GEAR_3_X_MIN&&x<=GEAR_3_X_MAX&&y>=GEAR_3_Y_MIN&&y<=GEAR_3_Y_MAX;
+    case 3: return x>=GEAR_4_X_MIN&&x<=GEAR_4_X_MAX&&y>=GEAR_4_Y_MIN&&y<=GEAR_4_Y_MAX;
+    case 4: return x>=GEAR_5_X_MIN&&x<=GEAR_5_X_MAX&&y>=GEAR_5_Y_MIN&&y<=GEAR_5_Y_MAX;
+    case 5: return x>=GEAR_6_X_MIN&&x<=GEAR_6_X_MAX&&y>=GEAR_6_Y_MIN&&y<=GEAR_6_Y_MAX;
+    default: return false;
+  }
 }
 int8_t findGear(int x,int y){
   int8_t found=0;for(uint8_t i=0;i<6;++i)if(gearZone(i,x,y)){if(found)return 0;found=i+1;}return found;
