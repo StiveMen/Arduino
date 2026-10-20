@@ -11,7 +11,7 @@
  * • КПП распознаётся по двум аналоговым координатам X/Y.
  *   Координаты КПП не передаются в игру как оси — вместо них
  *   отправляются отдельные кнопки передач 1–6.
- * • Кнопки HID: передачи 1–6, сцепление (когда нажато) и зажигание.
+ * • Кнопки HID: передачи 1–6, повышенная передача, сцепление и зажигание.
  * • Контроллер запускается сразу с настройками по умолчанию, без обязательной калибровки.
  * • Если при включении удерживать «Зажигание», запускается калибровка.
  * • При обычном запуске текущее положение энкодера принимается за ноль.
@@ -164,11 +164,12 @@ Joystick_ Joystick(
 );
 
 // Номера кнопок в игровом контроллере.
-// Нумерация внутри прошивки с нуля: кнопки 1–6 — передачи,
-// кнопка 7 — нажатая педаль сцепления, кнопка 8 — зажигание.
+// Нумерация внутри прошивки с нуля: 1–6 — передачи, 7 — повышенная,
+// 8 — сцепление, 9 — зажигание.
 constexpr uint8_t HID_GEAR_BASE = 0;
-constexpr uint8_t HID_CLUTCH = 6;
-constexpr uint8_t HID_IGNITION = 7;
+constexpr uint8_t HID_HIGH_GEAR = 6;
+constexpr uint8_t HID_CLUTCH = 7;
+constexpr uint8_t HID_IGNITION = 8;
 constexpr int CLUTCH_BUTTON_THRESHOLD = 512;
 
 // Текущее значение энкодера. Переменные меняются также из прерывания.
@@ -729,7 +730,7 @@ void updateController(bool sendHid) {
     steering = 0;
   }
 
-  // Кнопки HID: передачи 1–6, сцепление, зажигание.
+  // Кнопки HID: передачи 1–6, повышенная передача, сцепление, зажигание.
   // Концевик руля не назначается виртуальной кнопкой.
   for (uint8_t i = 0; i < 6; ++i) {
     Joystick.setButton(
@@ -737,6 +738,7 @@ void updateController(bool sendHid) {
       activeGear == (int8_t)(i + 1)
     );
   }
+  Joystick.setButton(HID_HIGH_GEAR, highGearLatched);
   Joystick.setButton(HID_CLUTCH, clutch >= CLUTCH_BUTTON_THRESHOLD);
   Joystick.setButton(HID_IGNITION, ignition.pressed());
 
@@ -862,7 +864,7 @@ void setup(){
   } else {
     calibrationMode = false;
     fstage = FStage::DONE;
-    Serial.println(F("[USB HID] Готов: кнопки 1–6 — передачи, 7 — сцепление, 8 — зажигание. Концевик не является HID-кнопкой."));
+    Serial.println(F("[USB HID] Готов: 1–6 передачи, 7 повышенная, 8 сцепление, 9 зажигание. Концевик не является HID-кнопкой."));
   }
 }
 void loop() {
